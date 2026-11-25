@@ -156,7 +156,7 @@ object Opds {
 
     fun searchUrl(template: String, query: String): String =
         template.replace("{searchTerms}", URLEncoder.encode(query, "UTF-8"))
-            .replace(Regex("\\{[a-zA-Z:]+\\?}"), "")
+            .replace(Regex("\\{[a-zA-Z:]+\\?\\}"), "") // Android's regex engine needs the closing brace escaped
 
     /** Downloads a book; returns bytes and a file name with the right extension. */
     suspend fun download(a: Acquisition, title: String): Pair<ByteArray, String> = withContext(Dispatchers.IO) {
