@@ -112,33 +112,77 @@ fun BookMenuSheet(book: BookEntry, onOpen: () -> Unit, onDelete: () -> Unit, onD
     }
 }
 
-/** Cover candidates from Google Books and Open Library for a title/author. */
+/** Title without series marks, subtitles and brackets — what cover databases index. */
+fun cleanTitle(t: String) = t.substringBefore(" / ").substringBefore(". ").replace(Regex("\\s*[\\(\\[].*?[\\)\\]]"), "")
+    .replace(Regex("[«»\"]"), "").trim().ifEmpty { t }
+
+/** The author's surname: "Лев Николаевич Толстой" or "Толстой Лев" both give a usable search term. */
+fun surname(author: String): String {
+    val first = author.split(',', ';').first().trim()
+    val parts = first.split(' ').filter { it.length > 1 }
+    return parts.maxByOrNull { if (it.endsWith(".")) 0 else it.length }.orEmpty()
+}
+
+/**
+ * Cover candidates for a title/author from several free sources, best first:
+ * Open Library, Wikipedia (the article's lead image is usually the cover), Wikimedia Commons, Google Books.
+ * Any source that fails or rate-limits is skipped.
+ */
 suspend fun findCovers(title: String, author: String): List<String> = withContext(Dispatchers.IO) {
     fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
+    val t = cleanTitle(title)
+    val a = surname(author)
+    fun json(url: String) = JSONObject(String(Opds.get(url), Charsets.UTF_8))
     coroutineScope {
-        val google = async {
-            runCatching {
-                val q = "intitle:${enc(title)}" + if (author.isNotBlank()) "+inauthor:${enc(author.split(',').first().trim())}" else ""
-                val o = JSONObject(String(Opds.get("https://www.googleapis.com/books/v1/volumes?q=$q&maxResults=20&printType=books")))
-                val items = o.optJSONArray("items") ?: return@runCatching emptyList<String>()
-                (0 until items.length()).mapNotNull { i ->
-                    val links = items.getJSONObject(i).optJSONObject("volumeInfo")?.optJSONObject("imageLinks") ?: return@mapNotNull null
-                    (links.optString("extraLarge").ifEmpty { null } ?: links.optString("large").ifEmpty { null }
-                        ?: links.optString("thumbnail").ifEmpty { null })
-                        ?.replace("http://", "https://")?.replace("&edge=curl", "")
-                }
-            }.getOrDefault(emptyList())
-        }
         val openLibrary = async {
             runCatching {
-                val q = "title=${enc(title)}" + if (author.isNotBlank()) "&author=${enc(author.split(',').first().trim())}" else ""
-                val o = JSONObject(String(Opds.get("https://openlibrary.org/search.json?$q&limit=20&fields=cover_i")))
-                val docs = o.optJSONArray("docs") ?: return@runCatching emptyList<String>()
-                (0 until docs.length()).mapNotNull { i -> docs.getJSONObject(i).optLong("cover_i").takeIf { it > 0 } }
-                    .distinct().map { "https://covers.openlibrary.org/b/id/$it-L.jpg" }
+                val out = LinkedHashSet<String>()
+                for (q in listOf("title=${enc(t)}" + if (a.isNotEmpty()) "&author=${enc(a)}" else "", "title=${enc(t)}", "q=${enc("$t $a".trim())}")) {
+                    val docs = json("https://openlibrary.org/search.json?$q&limit=24&fields=cover_i").optJSONArray("docs") ?: continue
+                    (0 until docs.length()).mapNotNull { docs.getJSONObject(it).optLong("cover_i").takeIf { id -> id > 0 } }
+                        .forEach { out += "https://covers.openlibrary.org/b/id/$it-L.jpg" }
+                    if (out.size >= 6) break
+                }
+                out.toList()
             }.getOrDefault(emptyList())
         }
-        listOf(google, openLibrary).awaitAll().flatten().distinct()
+        val wiki = async {
+            runCatching {
+                val out = ArrayList<String>()
+                for (lang in listOf("ru", "en")) {
+                    val pages = json("https://$lang.wikipedia.org/w/api.php?action=query&format=json&generator=search&gsrlimit=6" +
+                        "&prop=pageimages&piprop=thumbnail&pithumbsize=600&gsrsearch=${enc("$t $a".trim())}")
+                        .optJSONObject("query")?.optJSONObject("pages") ?: continue
+                    pages.keys().asSequence().map { pages.getJSONObject(it) }.sortedBy { it.optInt("index") }
+                        .mapNotNull { it.optJSONObject("thumbnail")?.optString("source")?.takeIf { s -> s.isNotEmpty() } }
+                        .forEach { out += it }
+                }
+                out
+            }.getOrDefault(emptyList())
+        }
+        val commons = async {
+            runCatching {
+                val pages = json("https://commons.wikimedia.org/w/api.php?action=query&format=json&generator=search&gsrnamespace=6&gsrlimit=8" +
+                    "&prop=imageinfo&iiprop=url&iiurlwidth=600&gsrsearch=${enc("$t $a обложка".trim())}")
+                    .optJSONObject("query")?.optJSONObject("pages") ?: return@runCatching emptyList<String>()
+                pages.keys().asSequence().map { pages.getJSONObject(it) }
+                    .mapNotNull { it.optJSONArray("imageinfo")?.optJSONObject(0)?.optString("thumburl")?.takeIf { s -> s.isNotEmpty() } }
+                    .filterNot { it.endsWith(".pdf.jpg") || it.contains(".djvu") }
+                    .toList()
+            }.getOrDefault(emptyList())
+        }
+        val google = async {
+            runCatching {
+                val q = "intitle:${enc(t)}" + if (a.isNotEmpty()) "+inauthor:${enc(a)}" else ""
+                val items = json("https://www.googleapis.com/books/v1/volumes?q=$q&maxResults=20&printType=books").optJSONArray("items")
+                    ?: return@runCatching emptyList<String>()
+                (0 until items.length()).mapNotNull { i ->
+                    val links = items.getJSONObject(i).optJSONObject("volumeInfo")?.optJSONObject("imageLinks") ?: return@mapNotNull null
+                    links.optString("thumbnail").ifEmpty { null }?.replace("http://", "https://")?.replace("&edge=curl", "")?.replace("zoom=1", "zoom=0")
+                }
+            }.getOrDefault(emptyList()) // the shared free quota is often used up — then this source just stays empty
+        }
+        listOf(openLibrary, wiki, commons, google).awaitAll().flatten().distinct()
     }
 }
 

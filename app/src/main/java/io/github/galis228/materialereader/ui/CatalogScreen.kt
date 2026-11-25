@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -103,7 +104,8 @@ fun CatalogScreen(onBack: () -> Unit, onOpenBook: (String) -> Unit) {
                     if (push) stack += url
                     feed = f
                     if (!append) entries.clear()
-                    entries += f.entries
+                    val seen = entries.map { it.id + it.title }.toHashSet()
+                    entries += f.entries.filter { seen.add(it.id + it.title) }
                 }
                 .onFailure { error = it.message ?: "Каталог недоступен" }
             loading = false
@@ -169,7 +171,8 @@ fun CatalogScreen(onBack: () -> Unit, onOpenBook: (String) -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(24.dp),
             )
             LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
-                items(entries, key = { it.id + it.title }) { e ->
+                // feeds can repeat entries across pages, so keys must not depend on the entry alone
+                itemsIndexed(entries, key = { i, e -> "$i|${e.id}" }) { _, e ->
                     EntryRow(
                         e, downloading == e.id,
                         onNavigate = { e.navUrl?.let { open(it) } },

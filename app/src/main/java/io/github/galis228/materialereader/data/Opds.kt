@@ -36,6 +36,8 @@ data class OpdsEntry(
 data class OpdsFeed(val url: String, val title: String, val entries: List<OpdsEntry>, val next: String?, val searchTemplate: String?)
 
 object Opds {
+    val USER_AGENT = "MaterialEReader/${BuildConfig.VERSION_NAME} (https://github.com/Galis228/materialereader; Android e-book reader)"
+
     private val defaults = listOf(
         Catalog("Викитека — русская классика", "wikisource:ru", "wikisource:ru?q={searchTerms}"),
         Catalog("Project Gutenberg", "https://www.gutenberg.org/ebooks.opds/",
@@ -168,13 +170,16 @@ object Opds {
         repeat(6) {
             val c = (u.openConnection() as HttpURLConnection).apply {
                 instanceFollowRedirects = false
-                setRequestProperty("User-Agent", "MaterialEReader/${BuildConfig.VERSION_NAME} (Android; OPDS)")
+                // Wikimedia and others reject requests without a descriptive agent with a contact link
+                setRequestProperty("User-Agent", USER_AGENT)
                 setRequestProperty("Accept", "application/atom+xml, application/xml, */*")
                 connectTimeout = 15_000; readTimeout = 90_000
             }
             try {
                 val code = c.responseCode
                 if (code in 300..399) { u = URL(u, c.getHeaderField("Location")); return@repeat }
+                if (code == 429) error("Сервис просит подождать: слишком много запросов. Попробуй через минуту.")
+                if (code == 503) error("Каталог сейчас на обслуживании (503). Попробуй позже или другой каталог.")
                 if (code != 200) error("Сервер ответил $code")
                 c.inputStream.use { input ->
                     val out = java.io.ByteArrayOutputStream()

@@ -43,6 +43,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        io.github.galis228.materialereader.data.CrashLog.install(this)
         io.github.galis228.materialereader.ui.initCustomFont(this)
         route(intent)
         setContent {
@@ -80,6 +81,25 @@ class MainActivity : ComponentActivity() {
                     composable("settings") { AppSettingsScreen(onBack = { nav.popBackStack() }) }
                 }
                 update?.let { UpdateDialog(it) { update = null } }
+                var crash by remember { mutableStateOf(io.github.galis228.materialereader.data.CrashLog.pending(this@MainActivity)) }
+                crash?.let { report ->
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { io.github.galis228.materialereader.data.CrashLog.clear(this@MainActivity); crash = null },
+                        title = { androidx.compose.material3.Text("Приложение закрылось с ошибкой") },
+                        text = { androidx.compose.material3.Text("В прошлый раз Material eReader упал. Отправь отчёт разработчику — по нему ошибку найти намного проще. В отчёте только технические данные, без твоих книг.") },
+                        confirmButton = {
+                            androidx.compose.material3.TextButton(onClick = {
+                                io.github.galis228.materialereader.ui.share(this@MainActivity, report, "Отчёт об ошибке Material eReader")
+                                io.github.galis228.materialereader.data.CrashLog.clear(this@MainActivity); crash = null
+                            }) { androidx.compose.material3.Text("Отправить отчёт") }
+                        },
+                        dismissButton = {
+                            androidx.compose.material3.TextButton(onClick = {
+                                io.github.galis228.materialereader.data.CrashLog.clear(this@MainActivity); crash = null
+                            }) { androidx.compose.material3.Text("Закрыть") }
+                        },
+                    )
+                }
                 incomingImage?.let { img ->
                     val target = remember(img) { io.github.galis228.materialereader.ui.PendingCover.take() }
                     io.github.galis228.materialereader.ui.SharedCoverDialog(img, target) { incomingImage = null }
