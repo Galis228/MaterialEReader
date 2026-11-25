@@ -59,6 +59,16 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import io.github.galis228.materialereader.ai.Ai
+import io.github.galis228.materialereader.ai.ApiEngine
+import io.github.galis228.materialereader.ai.ApiProvider
+import io.github.galis228.materialereader.ai.visibleAnswer
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.rounded.Cloud
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import io.github.galis228.materialereader.ai.EngineChoice
 import io.github.galis228.materialereader.ai.SharedModels
 import io.github.galis228.materialereader.data.Catalog
@@ -243,6 +253,7 @@ private fun AiSettingsBlock() {
             "Gemini Nano: " + when (nano) { null -> "проверяю…"; true -> "готова"; false -> "недоступна на этом телефоне" },
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        if (engine == EngineChoice.API || engine == EngineChoice.AUTO) ApiBlock(ai)
         OutlinedCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -291,6 +302,64 @@ private fun AiSettingsBlock() {
                     style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Switch(checked = gpu, onCheckedChange = null)
+        }
+    }
+}
+
+@Composable
+private fun ApiBlock(ai: Ai) {
+    var provider by remember { mutableStateOf(ai.settings.apiProvider) }
+    var url by remember { mutableStateOf(ai.settings.apiUrl) }
+    var model by remember { mutableStateOf(ai.settings.apiModel) }
+    var key by remember { mutableStateOf(ai.settings.apiKey) }
+    var showKey by remember { mutableStateOf(false) }
+    var test by remember { mutableStateOf<String?>(null) }
+    var testing by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    fun save() { ai.settings.apiProvider = provider; ai.settings.apiUrl = url.trim(); ai.settings.apiModel = model.trim(); ai.settings.apiKey = key.trim() }
+
+    OutlinedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.Cloud, null); Spacer(Modifier.width(8.dp))
+                Text("Нейросеть по API", style = MaterialTheme.typography.titleSmall)
+            }
+            Text("В этом режиме фрагменты книги отправляются выбранному сервису. Ключ хранится на телефоне в зашифрованном виде.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                ApiProvider.entries.forEachIndexed { i, p ->
+                    SegmentedButton(selected = provider == p, onClick = {
+                        if (url.isBlank() || ApiProvider.entries.any { it.defaultUrl == url }) url = p.defaultUrl
+                        provider = p; save()
+                    }, shape = SegmentedButtonDefaults.itemShape(i, ApiProvider.entries.size)) { Text(if (p == ApiProvider.OPENAI) "OpenAI и др." else p.label, maxLines = 1) }
+                }
+            }
+            OutlinedTextField(url, { url = it; save() }, label = { Text("Адрес API") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                supportingText = if (provider == ApiProvider.OPENAI) {
+                    { Text("OpenRouter: https://openrouter.ai/api/v1 · DeepSeek: https://api.deepseek.com/v1 · LM Studio: http://IP:1234/v1") }
+                } else null)
+            OutlinedTextField(model, { model = it; save() }, label = { Text("Модель") }, placeholder = { Text(provider.modelHint) },
+                singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(
+                key, { key = it; save() }, label = { Text("Ключ API") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                trailingIcon = { IconButton(onClick = { showKey = !showKey }) { Icon(if (showKey) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility, if (showKey) "Скрыть ключ" else "Показать ключ") } },
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                FilledTonalButton(enabled = !testing && model.isNotBlank(), onClick = {
+                    save(); testing = true; test = null
+                    scope.launch {
+                        test = runCatching {
+                            var last = ""
+                            ApiEngine.stream(ai.settings.api, "Отвечай одним коротким предложением.", "Скажи, что соединение работает.", 0.2f, 60).collect { last = it }
+                            "Работает: ${visibleAnswer(last).take(80)}"
+                        }.getOrElse { it.message ?: "Ошибка" }
+                        testing = false
+                    }
+                }) { Text(if (testing) "Проверяю…" else "Проверить") }
+                test?.let { Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 12.dp)) }
+            }
         }
     }
 }

@@ -49,6 +49,10 @@ import androidx.compose.material.icons.rounded.BookmarkBorder
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.TextFields
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -191,6 +195,9 @@ private fun BookReader(
     val ctl = remember { ReaderController().apply { block = startBlock.coerceIn(0, (book.blocks.size - 1).coerceAtLeast(0)); char = startChar } }
     var uiVisible by remember { mutableStateOf(false) }
     var sheet by remember { mutableStateOf<Sheet?>(null) }
+    var paragraph by remember { mutableIntStateOf(0) }
+    var aiPreset by remember { mutableStateOf<String?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
     val books by library.books.collectAsState()
     val bookmarks = books.firstOrNull { it.id == id }?.bookmarks.orEmpty()
 
@@ -231,11 +238,32 @@ private fun BookReader(
         }
     }
 
-    Box(Modifier.fillMaxSize().background(colors.bg)) {
-        when (settings.mode) {
-            ReadMode.SCROLL -> ScrollContent(book, settings, colors, ctl, startOffset, onTap) { scrollOffset = it }
-            ReadMode.PAGES -> PagedContent(book, settings, colors, ctl, onTap)
+    val hits = remember { BlockHits() }
+    val highlights = books.firstOrNull { it.id == id }?.highlights.orEmpty()
+    val hlMap = remember(highlights) { highlights.associateBy { it.block } }
+    val onLongPress: (Offset) -> Unit = { p -> hits.at(p)?.let { paragraph = it; uiVisible = false; sheet = Sheet.PARAGRAPH } }
+
+    // Reader brightness (null = follow the system)
+    val view = LocalView.current
+    DisposableEffect(settings.brightness) {
+        val window = (view.context as Activity).window
+        val lp = window.attributes
+        lp.screenBrightness = if (settings.brightness < 0f) android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+            else settings.brightness.coerceIn(0.01f, 1f)
+        window.attributes = lp
+        onDispose {
+            val l = window.attributes; l.screenBrightness = android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE; window.attributes = l
         }
+    }
+
+    Box(Modifier.fillMaxSize().background(colors.bg)) {
+        CompositionLocalProvider(LocalBlockHits provides hits, LocalHighlights provides hlMap, LocalPageDark provides colors.isDark) {
+            when (settings.mode) {
+                ReadMode.SCROLL -> ScrollContent(book, settings, colors, ctl, startOffset, onTap, onLongPress) { scrollOffset = it }
+                ReadMode.PAGES -> PagedContent(book, settings, colors, ctl, onTap, onLongPress)
+            }
+        }
+        if (settings.warmth > 0.01f) Box(Modifier.fillMaxSize().background(Color(0xFFFF8F00).copy(alpha = settings.warmth * 0.28f)))
 
         if (!uiVisible && settings.mode == ReadMode.SCROLL) {
             val p = if (ctl.sliderMax <= 0f) 1f else (ctl.sliderValue / ctl.sliderMax).coerceIn(0f, 1f)
@@ -246,6 +274,7 @@ private fun BookReader(
         AnimatedVisibility(uiVisible, Modifier.align(Alignment.TopCenter), enter = slideInVertically { -it } + fadeIn(), exit = slideOutVertically { -it } + fadeOut()) {
             TopPanel(
                 book.title, book.chapters.getOrNull(chapterIndex)?.title.orEmpty(), colors, marked, onBack,
+                onSearch = { uiVisible = false; sheet = Sheet.SEARCH },
                 onBookmark = {
                     scope.launch {
                         val existing = bookmarks.firstOrNull { it.block == ctl.block && abs(it.charPos - ctl.char) < 400 }
@@ -266,7 +295,7 @@ private fun BookReader(
             BottomPanel(
                 book, ctl, colors, minutesLeft = (leftWords.toFloat() / WPM).roundToInt(),
                 onText = { sheet = Sheet.TEXT; uiVisible = false }, onToc = { sheet = Sheet.TOC },
-                onAi = { sheet = Sheet.AI },
+                onAi = { aiPreset = null; sheet = Sheet.AI },
                 onToggleNight = { onSettings(settings.copy(theme = if (colors.isDark) ReaderTheme.PAPER else ReaderTheme.NIGHT)) },
             )
         }
@@ -279,17 +308,27 @@ private fun BookReader(
             onPick = { idx -> sheet = null; uiVisible = false; ctl.jumpTo(book.chapters[idx].startBlock, 0) },
             onPickBookmark = { m -> sheet = null; uiVisible = false; ctl.jumpTo(m.block, m.charPos) },
             onDeleteBookmark = { m -> scope.launch { library.removeBookmark(id, m.createdAt) } },
+            highlights = highlights,
+            onPickHighlight = { h -> sheet = null; uiVisible = false; ctl.jumpTo(h.block, 0) },
         ) { sheet = null }
+        Sheet.SEARCH -> SearchSheet(book, searchQuery, onQuery = { searchQuery = it }, onPick = { h ->
+            sheet = null; ctl.jumpTo(h.block, h.char)
+        }) { sheet = null }
+        Sheet.PARAGRAPH -> ParagraphSheet(
+            text = book.blocks.getOrNull(paragraph)?.text.orEmpty(), highlight = hlMap[paragraph],
+            onSet = { color, note -> scope.launch { library.setHighlight(id, paragraph, color, note) } },
+            onAskAi = { aiPreset = book.blocks.getOrNull(paragraph)?.text; sheet = Sheet.AI },
+        ) { if (sheet == Sheet.PARAGRAPH) sheet = null }
         Sheet.AI -> AiSheet(
             book, ctl.block, book.chapters.getOrNull(chapterIndex)?.startBlock ?: 0,
-            pageText = { ctl.visibleText() },
+            pageText = { aiPreset ?: ctl.visibleText() }, preset = aiPreset,
             onOpenSettings = { sheet = null; onAppSettings() },
         ) { sheet = null }
         null -> {}
     }
 }
 
-private enum class Sheet { TEXT, TOC, AI }
+private enum class Sheet { TEXT, TOC, AI, SEARCH, PARAGRAPH }
 
 @Composable
 fun SystemBars(visible: Boolean, dark: Boolean, keepScreenOn: Boolean) {
@@ -320,7 +359,7 @@ fun SystemBars(visible: Boolean, dark: Boolean, keepScreenOn: Boolean) {
 @Composable
 private fun ScrollContent(
     book: ParsedBook, s: ReaderSettings, c: PageColors, ctl: ReaderController, startOffset: Int,
-    onTap: (Float) -> Unit, onOffset: (Int) -> Unit,
+    onTap: (Float) -> Unit, onLongPress: (Offset) -> Unit, onOffset: (Int) -> Unit,
 ) {
     val list: LazyListState = rememberLazyListState(ctl.block, startOffset)
     val scope = rememberCoroutineScope()
@@ -351,7 +390,7 @@ private fun ScrollContent(
         val w = constraints.maxWidth.toFloat()
         LazyColumn(
             state = list,
-            modifier = Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures { onTap(it.x / w) } },
+            modifier = Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onLongPress = { onLongPress(it) }) { onTap(it.x / w) } },
             contentPadding = PaddingValues(
                 start = s.margin.dp, end = s.margin.dp,
                 top = bars.calculateTopPadding() + 28.dp, bottom = bars.calculateBottomPadding() + 120.dp,
@@ -359,7 +398,7 @@ private fun ScrollContent(
         ) {
             itemsIndexed(book.blocks, contentType = { _, b -> b.kind }) { i, b ->
                 val spec = specs.getValue(b.kind)
-                SliceText(if (b.kind == Block.Kind.SEPARATOR) "* * *" else b.text, spec, 0, first = i == 0)
+                SliceText(if (b.kind == Block.Kind.SEPARATOR) "* * *" else b.text, spec, 0, first = i == 0, block = i)
             }
         }
     }
@@ -374,15 +413,22 @@ private fun rememberSpecs(s: ReaderSettings, c: PageColors): Map<Block.Kind, Blo
 }
 
 @Composable
-private fun SliceText(text: String, spec: BlockSpec, start: Int, first: Boolean) {
+private fun SliceText(text: String, spec: BlockSpec, start: Int, first: Boolean, block: Int) {
     val d = LocalDensity.current
+    val hits = LocalBlockHits.current
+    val hl = LocalHighlights.current[block]
+    val dark = LocalPageDark.current
+    val token = remember { Any() }
+    if (hits != null) DisposableEffect(token) { onDispose { hits.remove(token) } }
     with(d) {
         Text(
             text, style = spec.forSlice(start),
-            modifier = Modifier.fillMaxWidth().padding(
+            modifier = Modifier.fillMaxWidth()
+                .then(if (hits != null) Modifier.onGloballyPositioned { hits.put(token, block, it.boundsInRoot()) } else Modifier)
+                .padding(
                 top = spec.topOnPage(first).toDp(), bottom = spec.bottom.toDp(),
                 start = spec.padStart.toDp(), end = spec.padEnd.toDp(),
-            ),
+            ).then(if (hl != null) Modifier.background(highlightTint(hl.color, dark), RoundedCornerShape(4.dp)) else Modifier),
         )
     }
 }
@@ -398,7 +444,7 @@ private object PageCache {
 }
 
 @Composable
-private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl: ReaderController, onTap: (Float) -> Unit) {
+private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl: ReaderController, onTap: (Float) -> Unit, onLongPress: (Offset) -> Unit) {
     val density = LocalDensity.current
     val fontResolver = LocalFontFamilyResolver.current
     val layoutDir = LocalLayoutDirection.current
@@ -508,7 +554,7 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
             CurlPager(
                 count = spreads, current = spread, onCurrentChange = { spread = it },
                 paper = lerpColor(c.bg, if (c.isDark) Color.White else Color.Black, 0.04f),
-                registerTurn = { curlTurn = it }, onTap = onTap, page = spreadView,
+                registerTurn = { curlTurn = it }, onTap = onTap, onLongPress = onLongPress, page = spreadView,
             )
         } else {
             val pager = rememberPagerState(initialPage = spread) { spreads }
@@ -522,7 +568,7 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
             }
             HorizontalPager(
                 state = pager,
-                modifier = Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures { onTap(it.x / w) } },
+                modifier = Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onLongPress = { onLongPress(it) }) { onTap(it.x / w) } },
                 beyondViewportPageCount = 1,
             ) { sp ->
                 Box(Modifier.fillMaxSize().pageTransition(pager, sp, s.anim)) { spreadView(sp) }
@@ -542,7 +588,7 @@ private fun PageView(page: Page, book: ParsedBook, specs: Map<Block.Kind, BlockS
             var text = full.substring(sl.start, sl.end.coerceAtMost(full.length))
             // a word split by hyphenation across pages keeps its hyphen
             if (sl.end < full.length && sl.end > 0 && full[sl.end - 1].isLetter() && full[sl.end].isLetter()) text += "-"
-            SliceText(text, specs.getValue(b.kind), sl.start, first = k == 0)
+            SliceText(text, specs.getValue(b.kind), sl.start, first = k == 0, block = sl.block)
         }
     }
 }
@@ -589,7 +635,7 @@ private fun Modifier.pageTransition(pager: PagerState, page: Int, anim: PageAnim
 // ---------------- Panels ----------------
 
 @Composable
-private fun TopPanel(title: String, chapter: String, c: PageColors, marked: Boolean, onBack: () -> Unit, onBookmark: () -> Unit) {
+private fun TopPanel(title: String, chapter: String, c: PageColors, marked: Boolean, onBack: () -> Unit, onSearch: () -> Unit, onBookmark: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().background(c.panel).statusBarsPadding().padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -599,6 +645,8 @@ private fun TopPanel(title: String, chapter: String, c: PageColors, marked: Bool
             Text(title, color = c.text, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(chapter, color = c.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
+        RoundIcon(onSearch, c, "Поиск по книге") { Icon(Icons.Rounded.Search, null) }
+        Spacer(Modifier.width(6.dp))
         RoundIcon(onBookmark, c, if (marked) "Убрать закладку" else "Добавить закладку") {
             Icon(if (marked) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder, null, tint = if (marked) c.accent else c.text)
         }

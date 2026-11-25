@@ -61,12 +61,13 @@ private enum class AiAction(val label: String) { EXPLAIN("Объяснить с�
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-fun AiSheet(book: ParsedBook, block: Int, chapterStart: Int, pageText: () -> String, onOpenSettings: () -> Unit, onDismiss: () -> Unit) {
+fun AiSheet(book: ParsedBook, block: Int, chapterStart: Int, pageText: () -> String, onOpenSettings: () -> Unit, preset: String? = null, onDismiss: () -> Unit) {
     val ctx = LocalContext.current
     val ai = remember { Ai.get(ctx) }
     val helper = remember(book) { BookAi(ai, book) }
     val scope = rememberCoroutineScope()
     var label by remember { mutableStateOf("…") }
+    var online by remember { mutableStateOf(false) }
     var action by remember { mutableStateOf<AiAction?>(null) }
     var input by remember { mutableStateOf("") }
     var answer by remember { mutableStateOf("") }
@@ -76,7 +77,7 @@ fun AiSheet(book: ParsedBook, block: Int, chapterStart: Int, pageText: () -> Str
     val busy = job?.isActive == true
     val maxH = (LocalConfiguration.current.screenHeightDp * 0.55f).dp
 
-    LaunchedEffect(Unit) { label = ai.label() }
+    LaunchedEffect(Unit) { label = ai.label(); online = ai.online() }
     DisposableEffect(Unit) { onDispose { job?.cancel(); ai.cancel() } }
 
     fun run(a: AiAction) {
@@ -87,7 +88,7 @@ fun AiSheet(book: ParsedBook, block: Int, chapterStart: Int, pageText: () -> Str
         job = scope.launch {
             runCatching {
                 val flow: Flow<String> = when (a) {
-                    AiAction.EXPLAIN -> helper.explain(pageText())
+                    AiAction.EXPLAIN -> helper.explain(pageText(), single = preset != null)
                     AiAction.RECAP -> helper.recap(block)
                     AiAction.CHAPTER -> helper.chapterSummary(chapterStart, block) { i, n -> status = if (n > 0) "Читаю главу: часть $i из $n…" else "Пишу пересказ…" }
                     AiAction.WHO -> helper.whoIs(input.trim(), block)
@@ -98,6 +99,8 @@ fun AiSheet(book: ParsedBook, block: Int, chapterStart: Int, pageText: () -> Str
             status = null
         }
     }
+
+    LaunchedEffect(preset) { if (preset != null) run(AiAction.EXPLAIN) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -113,7 +116,7 @@ fun AiSheet(book: ParsedBook, block: Int, chapterStart: Int, pageText: () -> Str
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
                     Text("ИИ-помощник", style = MaterialTheme.typography.titleMedium)
-                    Text("$label · офлайн · без спойлеров", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("$label · ${if (online) "через интернет" else "офлайн"} · без спойлеров", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 IconButton(onClick = onOpenSettings) { Icon(Icons.Rounded.Settings, "Настройки ИИ") }
             }

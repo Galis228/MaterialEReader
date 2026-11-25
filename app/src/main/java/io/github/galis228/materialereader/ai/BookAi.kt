@@ -21,9 +21,10 @@ class BookAi(private val ai: Ai, private val book: ParsedBook) {
         return sb.takeLast(budget).toString()
     }
 
-    suspend fun explain(pageText: String): Flow<String> {
+    suspend fun explain(pageText: String, single: Boolean = false): Flow<String> {
         val t = pageText.take(ai.budgetChars())
-        return ai.stream(system, "Объясни простыми словами, что происходит в этом фрагменте, и поясни сложные слова и отсылки, если они есть.\n\nФрагмент:\n$t")
+        val what = if (single) "абзаце" else "фрагменте"
+        return ai.stream(system, "Объясни простыми словами, что происходит в этом $what, и поясни сложные слова и отсылки, если они есть.\n\nТекст:\n$t")
     }
 
     suspend fun recap(block: Int): Flow<String> {

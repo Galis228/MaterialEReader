@@ -42,7 +42,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 class AiException(msg: String) : Exception(msg)
 
-enum class EngineChoice(val label: String) { AUTO("Авто"), NANO("Gemini Nano"), FILE("Файл-модель") }
+enum class EngineChoice(val label: String) { AUTO("Авто"), NANO("Nano"), FILE("Файл"), API("API") }
 
 /** Shared models folder with НаноПеро and «Персона»: Download/AI-Models. */
 object SharedModels {
@@ -79,6 +79,21 @@ class AiSettings(ctx: Context) {
     var useGpu: Boolean
         get() = p.getBoolean("gpu", false)
         set(v) { p.edit().putBoolean("gpu", v).apply() }
+
+    var apiProvider: ApiProvider
+        get() = runCatching { ApiProvider.valueOf(p.getString("api_provider", "OPENAI")!!) }.getOrDefault(ApiProvider.OPENAI)
+        set(v) { p.edit().putString("api_provider", v.name).apply() }
+    var apiUrl: String
+        get() = p.getString("api_url", null) ?: apiProvider.defaultUrl
+        set(v) { p.edit().putString("api_url", v).apply() }
+    var apiModel: String
+        get() = p.getString("api_model", "")!!
+        set(v) { p.edit().putString("api_model", v).apply() }
+    var apiKey: String
+        get() = KeyVault.decrypt(p.getString("api_key", "")!!)
+        set(v) { p.edit().putString("api_key", KeyVault.encrypt(v)).apply() }
+
+    val api: ApiConfig get() = ApiConfig(apiProvider, apiUrl, apiModel, apiKey)
 }
 
 private val stopMarkers = listOf(
@@ -295,24 +310,51 @@ class Ai private constructor(private val ctx: Context) {
     val nano = NanoEngine()
     val local = LocalEngine(ctx)
 
-    private suspend fun useNano(): Boolean = when (settings.engine) {
-        EngineChoice.NANO -> if (nano.available()) true
-            else throw AiException("Gemini Nano недоступна на этом телефоне (${nano.detail}). Выбери файл-модель в «Настройки → ИИ».")
-        EngineChoice.FILE -> false
-        EngineChoice.AUTO -> settings.model.isBlank() && nano.available()
+    private enum class Route { NANO, FILE, API }
+
+    private suspend fun route(): Route = when (settings.engine) {
+        EngineChoice.NANO -> if (nano.available()) Route.NANO
+            else throw AiException("Gemini Nano недоступна на этом телефоне (${nano.detail}). Выбери другой движок в «Настройки → ИИ».")
+        EngineChoice.FILE -> Route.FILE
+        EngineChoice.API -> Route.API
+        EngineChoice.AUTO -> when {
+            settings.model.isNotBlank() -> Route.FILE
+            nano.available() -> Route.NANO
+            settings.api.ready -> Route.API
+            else -> Route.FILE
+        }
     }
 
     /** How much book text fits into one request. */
-    suspend fun budgetChars(): Int = if (useNano()) 2800 else ((settings.ctxTokens - 700) * 1.6).toInt().coerceIn(1200, 12000)
+    suspend fun budgetChars(): Int = when (route()) {
+        Route.NANO -> 2800
+        Route.API -> 40_000
+        Route.FILE -> ((settings.ctxTokens - 700) * 1.6).toInt().coerceIn(1200, 12000)
+    }
 
-    suspend fun label(): String = runCatching { if (useNano()) "Gemini Nano" else settings.model.substringBeforeLast('.') }
-        .getOrDefault("модель не выбрана")
+    suspend fun label(): String = runCatching {
+        when (route()) {
+            Route.NANO -> "Gemini Nano"
+            Route.API -> settings.apiModel.ifBlank { "API не настроен" }
+            Route.FILE -> settings.model.substringBeforeLast('.').ifBlank { "модель не выбрана" }
+        }
+    }.getOrDefault("модель не выбрана")
 
-    suspend fun stream(system: String, user: String, temperature: Float = 0.3f, maxOut: Int = 700): Flow<String> {
-        if (useNano()) return nano.generate(system, user, temperature).flowOn(Dispatchers.Default)
-        if (settings.model.isBlank()) throw AiException(
-            "ИИ пока не настроен: Gemini Nano недоступна, а модель не выбрана. Открой «Настройки → ИИ» и выбери модель из папки ${SharedModels.path}.")
-        return local.generate(system, user, temperature, maxOut, settings)
+    /** Whether book text leaves the phone with the current settings. */
+    suspend fun online(): Boolean = runCatching { route() == Route.API }.getOrDefault(false)
+
+    suspend fun stream(system: String, user: String, temperature: Float = 0.3f, maxOut: Int = 700): Flow<String> = when (route()) {
+        Route.NANO -> nano.generate(system, user, temperature).flowOn(Dispatchers.Default)
+        Route.API -> {
+            val cfg = settings.api
+            if (!cfg.ready) throw AiException("API не настроен: укажи ключ и модель в «Настройки → ИИ».")
+            ApiEngine.stream(cfg, system, user, temperature, maxOf(maxOut, 1000))
+        }
+        Route.FILE -> {
+            if (settings.model.isBlank()) throw AiException(
+                "ИИ пока не настроен: Gemini Nano недоступна, модель не выбрана и API не подключён. Открой «Настройки → ИИ».")
+            local.generate(system, user, temperature, maxOut, settings)
+        }
     }
 
     suspend fun complete(system: String, user: String, maxOut: Int = 400): String {

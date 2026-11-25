@@ -54,6 +54,7 @@ fun CurlPager(
     paper: Color,
     registerTurn: ((Int) -> Unit) -> Unit,
     onTap: (Float) -> Unit,
+    onLongPress: (Offset) -> Unit = {},
     page: @Composable (Int) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -112,7 +113,7 @@ fun CurlPager(
 
         Box(
             Modifier.fillMaxSize()
-                .pointerInput(Unit) { detectTapGestures { onTap(it.x / w) } }
+                .pointerInput(Unit) { detectTapGestures(onLongPress = { onLongPress(it) }) { onTap(it.x / w) } }
                 .pointerInput(Unit) {
                     detectDragGestures(
                         onDragStart = { o ->

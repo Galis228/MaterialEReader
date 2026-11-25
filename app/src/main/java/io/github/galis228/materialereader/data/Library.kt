@@ -26,6 +26,9 @@ import java.util.UUID
 
 data class Bookmark(val block: Int, val charPos: Int, val snippet: String, val chapter: String, val createdAt: Long)
 
+/** A highlighted paragraph with an optional note. color = index in [HighlightColors]. */
+data class Highlight(val block: Int, val color: Int, val note: String, val createdAt: Long)
+
 data class BookEntry(
     val id: String,
     val title: String,
@@ -44,6 +47,7 @@ data class BookEntry(
     val readingMillis: Long = 0L,
     val sourceUri: String? = null,
     val bookmarks: List<Bookmark> = emptyList(),
+    val highlights: List<Highlight> = emptyList(),
 ) {
     val started get() = lastOpenedAt > 0L
     val finished get() = progress >= 0.98f
@@ -145,6 +149,13 @@ class Library private constructor(private val ctx: Context) {
 
     suspend fun addBookmark(id: String, b: Bookmark) = editBook(id) { it.copy(bookmarks = (it.bookmarks + b).sortedBy { m -> m.block * 1_000_000L + m.charPos }) }
     suspend fun removeBookmark(id: String, createdAt: Long) = editBook(id) { it.copy(bookmarks = it.bookmarks.filterNot { m -> m.createdAt == createdAt }) }
+
+    /** Adds, recolors or re-notes the highlight of a paragraph; color < 0 removes it. */
+    suspend fun setHighlight(id: String, block: Int, color: Int, note: String) = editBook(id) { e ->
+        val rest = e.highlights.filterNot { it.block == block }
+        val old = e.highlights.firstOrNull { it.block == block }
+        e.copy(highlights = if (color < 0) rest else (rest + Highlight(block, color, note, old?.createdAt ?: System.currentTimeMillis())).sortedBy { it.block })
+    }
 
     private suspend fun editBook(id: String, f: (BookEntry) -> BookEntry) = mutex.withLock {
         _books.update { list -> list.map { if (it.id == id) f(it) else it } }
@@ -250,6 +261,9 @@ class Library private constructor(private val ctx: Context) {
             put("pos", b.position); put("off", b.offset); put("char", b.charPos); put("progress", b.progress.toDouble())
             put("added", b.addedAt); put("opened", b.lastOpenedAt); put("millis", b.readingMillis)
             b.sourceUri?.let { put("source", it) }
+            put("highlights", JSONArray().apply {
+                b.highlights.forEach { h -> put(JSONObject().put("block", h.block).put("color", h.color).put("note", h.note).put("created", h.createdAt)) }
+            })
             put("bookmarks", JSONArray().apply {
                 b.bookmarks.forEach { m ->
                     put(JSONObject().put("block", m.block).put("char", m.charPos).put("snippet", m.snippet)
@@ -268,6 +282,7 @@ class Library private constructor(private val ctx: Context) {
             runCatching {
                 val o = arr.getJSONObject(i)
                 val bm = o.optJSONArray("bookmarks")
+                val hl = o.optJSONArray("highlights")
                 BookEntry(
                     o.getString("id"), o.getString("title"), o.optString("author"), BookFormat.valueOf(o.getString("format")),
                     o.getString("file"), o.optBoolean("cover"), o.getInt("total"), o.optInt("words"),
@@ -278,6 +293,10 @@ class Library private constructor(private val ctx: Context) {
                     if (bm == null) emptyList() else (0 until bm.length()).map { j ->
                         val m = bm.getJSONObject(j)
                         Bookmark(m.getInt("block"), m.optInt("char"), m.optString("snippet"), m.optString("chapter"), m.getLong("created"))
+                    },
+                    if (hl == null) emptyList() else (0 until hl.length()).map { j ->
+                        val h = hl.getJSONObject(j)
+                        Highlight(h.getInt("block"), h.optInt("color"), h.optString("note"), h.optLong("created"))
                     },
                 )
             }.getOrNull()

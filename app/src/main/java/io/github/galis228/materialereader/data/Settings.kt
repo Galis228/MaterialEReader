@@ -29,6 +29,9 @@ data class ReaderSettings(
     val anim: PageAnim = PageAnim.SLIDE,
     val twoPages: Boolean = true,
     val mangaRtl: Boolean = false,
+    /** -1 = follow the system. */
+    val brightness: Float = -1f,
+    val warmth: Float = 0f,
 )
 
 private val Context.store by preferencesDataStore("reader_settings")
@@ -48,6 +51,8 @@ class SettingsRepo(private val ctx: Context) {
         val anim = stringPreferencesKey("anim")
         val two = booleanPreferencesKey("two_pages")
         val rtl = booleanPreferencesKey("manga_rtl")
+        val bright = floatPreferencesKey("brightness")
+        val warm = floatPreferencesKey("warmth")
     }
 
     val settings: Flow<ReaderSettings> = ctx.store.data.map { p -> p.toSettings() }
@@ -68,6 +73,8 @@ class SettingsRepo(private val ctx: Context) {
             anim = this[K.anim]?.let { runCatching { PageAnim.valueOf(it) }.getOrNull() } ?: d.anim,
             twoPages = this[K.two] ?: d.twoPages,
             mangaRtl = this[K.rtl] ?: d.mangaRtl,
+            brightness = this[K.bright] ?: d.brightness,
+            warmth = this[K.warm] ?: d.warmth,
         )
     }
 
@@ -77,6 +84,7 @@ class SettingsRepo(private val ctx: Context) {
             it[K.font] = s.font.name; it[K.theme] = s.theme.name; it[K.justify] = s.justify
             it[K.volume] = s.volumeKeys; it[K.screenOn] = s.keepScreenOn; it[K.tap] = s.tapToTurn
             it[K.mode] = s.mode.name; it[K.anim] = s.anim.name; it[K.two] = s.twoPages; it[K.rtl] = s.mangaRtl
+            it[K.bright] = s.brightness; it[K.warm] = s.warmth
         }
     }
 }

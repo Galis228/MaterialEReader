@@ -123,6 +123,13 @@ fun TextSettingsSheet(s: ReaderSettings, onChange: (ReaderSettings) -> Unit, onD
                             Icon(Icons.Rounded.Add, "Больше")
                         }
                     }
+                    SwitchRow("Яркость как в системе", s.brightness < 0f) { onChange(s.copy(brightness = if (it) -1f else 0.5f)) }
+                    if (s.brightness >= 0f) LabeledSlider("Яркость", s.brightness, 0.01f..1f, { "${(it * 100).roundToInt()}%" }) {
+                        onChange(s.copy(brightness = it))
+                    }
+                    LabeledSlider("Тёплый фильтр", s.warmth, 0f..1f, { if (it < 0.01f) "выкл" else "${(it * 100).roundToInt()}%" }) {
+                        onChange(s.copy(warmth = it))
+                    }
                     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                         ReaderFont.entries.forEachIndexed { i, f ->
                             SegmentedButton(
@@ -193,6 +200,8 @@ private fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Un
 fun TocSheet(
     book: ParsedBook, current: Int, bookmarks: List<Bookmark>,
     onPick: (Int) -> Unit, onPickBookmark: (Bookmark) -> Unit, onDeleteBookmark: (Bookmark) -> Unit,
+    highlights: List<io.github.galis228.materialereader.data.Highlight> = emptyList(),
+    onPickHighlight: (io.github.galis228.materialereader.data.Highlight) -> Unit = {},
     onDismiss: () -> Unit,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -200,8 +209,11 @@ fun TocSheet(
         PrimaryTabRow(selectedTabIndex = tab) {
             Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Главы") })
             Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Закладки · ${bookmarks.size}") })
+            Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("Цитаты · ${highlights.size}") })
         }
-        if (tab == 0) {
+        if (tab == 2) {
+            QuotesTab(book, highlights, onPickHighlight)
+        } else if (tab == 0) {
             val state = rememberLazyListState((current - 3).coerceAtLeast(0))
             LazyColumn(state = state, modifier = Modifier.navigationBarsPadding()) {
                 itemsIndexed(book.chapters) { i, ch ->
