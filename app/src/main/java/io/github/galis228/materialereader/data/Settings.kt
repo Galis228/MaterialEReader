@@ -11,7 +11,11 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
 enum class ReaderTheme(val label: String) { PAPER("Бумага"), LIGHT("Светлая"), DARK("Тёмная"), NIGHT("Ночь OLED"), YOU("Material You") }
-enum class ReaderFont(val label: String) { SERIF("С засечками"), SANS("Без засечек"), MONO("Моно") }
+enum class ReaderFont(val label: String) {
+    LITERATA("Literata"), PT_SERIF("PT Serif"), LORA("Lora"), GARAMOND("EB Garamond"),
+    PT_SANS("PT Sans"), FIRA("Fira Sans"), ANDIKA("Andika"),
+    SERIF("Системный с засечками"), SANS("Системный"), MONO("Моно"), CUSTOM("Свой шрифт"),
+}
 enum class ReadMode(val label: String) { SCROLL("Прокрутка"), PAGES("Страницы") }
 enum class PageAnim(val label: String) { SLIDE("Сдвиг"), COVER("Наложение"), FADE("Затухание"), CURL("Загиб"), NONE("Без анимации") }
 
@@ -19,7 +23,7 @@ data class ReaderSettings(
     val fontSize: Float = 19f,
     val lineHeight: Float = 1.55f,
     val margin: Float = 24f,
-    val font: ReaderFont = ReaderFont.SERIF,
+    val font: ReaderFont = ReaderFont.LITERATA,
     val theme: ReaderTheme = ReaderTheme.PAPER,
     val justify: Boolean = true,
     val volumeKeys: Boolean = true,
@@ -32,6 +36,10 @@ data class ReaderSettings(
     /** -1 = follow the system. */
     val brightness: Float = -1f,
     val warmth: Float = 0f,
+    /** 0 = take from the theme. */
+    val textColor: Long = 0L,
+    val bgColor: Long = 0L,
+    val simpleMode: Boolean = false,
 )
 
 private val Context.store by preferencesDataStore("reader_settings")
@@ -53,6 +61,9 @@ class SettingsRepo(private val ctx: Context) {
         val rtl = booleanPreferencesKey("manga_rtl")
         val bright = floatPreferencesKey("brightness")
         val warm = floatPreferencesKey("warmth")
+        val textColor = androidx.datastore.preferences.core.longPreferencesKey("text_color")
+        val bgColor = androidx.datastore.preferences.core.longPreferencesKey("bg_color")
+        val simple = booleanPreferencesKey("simple_mode")
     }
 
     val settings: Flow<ReaderSettings> = ctx.store.data.map { p -> p.toSettings() }
@@ -75,6 +86,9 @@ class SettingsRepo(private val ctx: Context) {
             mangaRtl = this[K.rtl] ?: d.mangaRtl,
             brightness = this[K.bright] ?: d.brightness,
             warmth = this[K.warm] ?: d.warmth,
+            textColor = this[K.textColor] ?: d.textColor,
+            bgColor = this[K.bgColor] ?: d.bgColor,
+            simpleMode = this[K.simple] ?: d.simpleMode,
         )
     }
 
@@ -85,6 +99,7 @@ class SettingsRepo(private val ctx: Context) {
             it[K.volume] = s.volumeKeys; it[K.screenOn] = s.keepScreenOn; it[K.tap] = s.tapToTurn
             it[K.mode] = s.mode.name; it[K.anim] = s.anim.name; it[K.two] = s.twoPages; it[K.rtl] = s.mangaRtl
             it[K.bright] = s.brightness; it[K.warm] = s.warmth
+            it[K.textColor] = s.textColor; it[K.bgColor] = s.bgColor; it[K.simple] = s.simpleMode
         }
     }
 }

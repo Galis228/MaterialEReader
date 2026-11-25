@@ -37,25 +37,66 @@ data class OpdsFeed(val url: String, val title: String, val entries: List<OpdsEn
 
 object Opds {
     private val defaults = listOf(
+        Catalog("Викитека — русская классика", "wikisource:ru", "wikisource:ru?q={searchTerms}"),
         Catalog("Project Gutenberg", "https://www.gutenberg.org/ebooks.opds/",
             "https://www.gutenberg.org/ebooks/search.opds/?query={searchTerms}"),
+        Catalog("Wikisource (English)", "https://ws-export.wmcloud.org/opds/en/Ready_for_export.xml", "wikisource:en?q={searchTerms}"),
     )
 
+    /** Catalogs added in a later version show up for people who already have a saved list. */
+    private const val DEFAULTS_VERSION = 2
+
     fun catalogs(ctx: Context): List<Catalog> {
-        val raw = ctx.getSharedPreferences("opds", 0).getString("catalogs", null) ?: return defaults
-        return runCatching {
+        val p = ctx.getSharedPreferences("opds", 0)
+        val raw = p.getString("catalogs", null) ?: return defaults
+        val saved = runCatching {
             val a = JSONArray(raw)
             (0 until a.length()).map { a.getJSONObject(it).let { o -> Catalog(o.getString("name"), o.getString("url"), o.optString("search").ifEmpty { null }) } }
         }.getOrDefault(defaults)
+        if (p.getInt("defaults_version", 1) >= DEFAULTS_VERSION) return saved
+        val merged = defaults.filter { d -> saved.none { it.url == d.url } } + saved
+        saveCatalogs(ctx, merged)
+        return merged
     }
 
     fun saveCatalogs(ctx: Context, list: List<Catalog>) {
         val a = JSONArray()
         list.forEach { a.put(JSONObject().put("name", it.name).put("url", it.url).put("search", it.searchTemplate ?: "")) }
-        ctx.getSharedPreferences("opds", 0).edit().putString("catalogs", a.toString()).apply()
+        ctx.getSharedPreferences("opds", 0).edit().putString("catalogs", a.toString()).putInt("defaults_version", DEFAULTS_VERSION).apply()
+    }
+
+    /** Classics that are free to read everywhere, as quick searches. */
+    val classics = listOf("Пушкин", "Лермонтов", "Гоголь", "Тургенев", "Достоевский", "Толстой", "Чехов", "Куприн", "Крылов", "Гончаров")
+
+    /**
+     * Wikisource has no OPDS search, so "wikisource:<lang>?q=…" searches its works through the MediaWiki API
+     * and offers each as an EPUB made by the official WS Export tool.
+     */
+    private fun wikisource(url: String): OpdsFeed {
+        val lang = url.removePrefix("wikisource:").substringBefore('?').ifEmpty { "ru" }
+        val q = url.substringAfter("?q=", "").let { java.net.URLDecoder.decode(it, "UTF-8") }
+        val title = if (lang == "ru") "Викитека" else "Wikisource"
+        if (q.isBlank()) return OpdsFeed(url, title, emptyList(), null, "wikisource:$lang?q={searchTerms}")
+        val api = "https://$lang.wikisource.org/w/api.php?action=query&list=search&srnamespace=0&srlimit=40&format=json&srsearch=" +
+            URLEncoder.encode(q, "UTF-8")
+        val hits = JSONObject(String(get(api), Charsets.UTF_8)).optJSONObject("query")?.optJSONArray("search") ?: JSONArray()
+        val entries = (0 until hits.length()).map { hits.getJSONObject(it) }
+            .map { it.getString("title") }
+            .filter { '/' !in it } // whole works, not their chapters
+            .distinct()
+            .map { t ->
+                val page = URLEncoder.encode(t.replace(' ', '_'), "UTF-8")
+                OpdsEntry(
+                    id = "ws:$lang:$t", title = t, author = "", summary = "",
+                    coverUrl = null, navUrl = null,
+                    acquisitions = listOf(Acquisition("https://ws-export.wmcloud.org/?format=epub&lang=$lang&page=$page", "application/epub+zip")),
+                )
+            }
+        return OpdsFeed(url, "$title: «$q»", entries, null, "wikisource:$lang?q={searchTerms}")
     }
 
     suspend fun load(url: String): OpdsFeed = withContext(Dispatchers.IO) {
+        if (url.startsWith("wikisource:")) return@withContext wikisource(url)
         val f = parse(String(get(url), Charsets.UTF_8), url)
         if (f.searchTemplate != null || f.osdUrl == null) return@withContext f.feed
         val template = runCatching {
@@ -129,7 +170,7 @@ object Opds {
                 instanceFollowRedirects = false
                 setRequestProperty("User-Agent", "MaterialEReader/${BuildConfig.VERSION_NAME} (Android; OPDS)")
                 setRequestProperty("Accept", "application/atom+xml, application/xml, */*")
-                connectTimeout = 15_000; readTimeout = 30_000
+                connectTimeout = 15_000; readTimeout = 90_000
             }
             try {
                 val code = c.responseCode

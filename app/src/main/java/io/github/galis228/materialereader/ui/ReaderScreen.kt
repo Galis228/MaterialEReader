@@ -111,6 +111,7 @@ import io.github.galis228.materialereader.data.ReadMode
 import io.github.galis228.materialereader.data.ReaderSettings
 import io.github.galis228.materialereader.data.ReaderTheme
 import io.github.galis228.materialereader.data.SettingsRepo
+import io.github.galis228.materialereader.data.ReadingSpeed
 import io.github.galis228.materialereader.parse.Block
 import io.github.galis228.materialereader.parse.ParsedBook
 import io.github.galis228.materialereader.parse.countWords
@@ -123,7 +124,6 @@ import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-private const val WPM = 200
 
 private sealed interface LoadState {
     data object Loading : LoadState
@@ -140,7 +140,7 @@ fun ReaderScreen(id: String, onBack: () -> Unit, onAppSettings: () -> Unit = {})
     val entry = remember(id) { library.entry(id) }
     val settingsScope = rememberCoroutineScope()
     val s = settings ?: run { Box(Modifier.fillMaxSize()); return }
-    val colors = pageColors(s.theme, MaterialTheme.colorScheme)
+    val colors = pageColors(s, MaterialTheme.colorScheme)
     val onSettings: (ReaderSettings) -> Unit = { new -> settingsScope.launch { repo.update(new) } }
 
     if (entry?.isComic == true) {
@@ -181,6 +181,8 @@ class ReaderController {
     var jumpTo: (block: Int, char: Int) -> Unit = { _, _ -> }
     var turn: (dir: Int) -> Unit = {}
     var visibleText: () -> String = { "" }
+    /** Pages left until the next chapter (page mode only). */
+    var pagesToChapter by mutableStateOf<Int?>(null)
 }
 
 @OptIn(FlowPreview::class)
@@ -208,6 +210,28 @@ private fun BookReader(
 
     SystemBars(uiVisible, colors.isDark, settings.keepScreenOn)
 
+    // Personal reading speed: each step forward = words read / time spent on them
+    val appCtx = LocalContext.current.applicationContext
+    var wpm by remember { mutableFloatStateOf(ReadingSpeed.wpm(appCtx)) }
+    var calibrated by remember { mutableStateOf(ReadingSpeed.calibrated(appCtx)) }
+    LaunchedEffect(Unit) {
+        var lastWords = -1; var lastTime = System.currentTimeMillis()
+        snapshotFlow { ctl.block to ctl.char }.collect { (b, c) ->
+            val blockLen = book.blocks.getOrNull(b)?.text?.length?.coerceAtLeast(1) ?: 1
+            val inBlock = ((wordsBefore[(b + 1).coerceAtMost(book.blocks.size)] - wordsBefore[b.coerceAtMost(book.blocks.size)]) * c / blockLen)
+            val words = wordsBefore[b.coerceIn(0, book.blocks.size)] + inBlock
+            val now = System.currentTimeMillis()
+            // in scroll mode small steps accumulate until there is a page's worth of words
+            if (lastWords >= 0 && words > lastWords && words - lastWords < 15 && now - lastTime < 4 * 60_000L) return@collect
+            if (lastWords >= 0 && words > lastWords && !uiVisible && sheet == null) {
+                if (ReadingSpeed.record(appCtx, words - lastWords, now - lastTime)) {
+                    wpm = ReadingSpeed.wpm(appCtx); calibrated = ReadingSpeed.calibrated(appCtx)
+                }
+            }
+            lastWords = words; lastTime = now
+        }
+    }
+
     // Persist position (debounced) and count reading time
     var scrollOffset by remember { mutableIntStateOf(startOffset) }
     LaunchedEffect(Unit) {
@@ -232,8 +256,8 @@ private fun BookReader(
     val onTap: (Float) -> Unit = { x ->
         when {
             uiVisible -> uiVisible = false
-            settings.tapToTurn && x < 0.28f -> ctl.turn(-1)
-            settings.tapToTurn && x > 0.72f -> ctl.turn(1)
+            settings.tapToTurn && x < (if (settings.simpleMode) 0.35f else 0.28f) -> ctl.turn(-1)
+            settings.tapToTurn && x > (if (settings.simpleMode) 0.65f else 0.72f) -> ctl.turn(1)
             else -> uiVisible = true
         }
     }
@@ -241,7 +265,9 @@ private fun BookReader(
     val hits = remember { BlockHits() }
     val highlights = books.firstOrNull { it.id == id }?.highlights.orEmpty()
     val hlMap = remember(highlights) { highlights.associateBy { it.block } }
-    val onLongPress: (Offset) -> Unit = { p -> hits.at(p)?.let { paragraph = it; uiVisible = false; sheet = Sheet.PARAGRAPH } }
+    val onLongPress: (Offset) -> Unit = { p ->
+        if (!settings.simpleMode) hits.at(p)?.let { paragraph = it; uiVisible = false; sheet = Sheet.PARAGRAPH }
+    }
 
     // Reader brightness (null = follow the system)
     val view = LocalView.current
@@ -273,7 +299,7 @@ private fun BookReader(
         val marked = bookmarks.any { it.block == ctl.block && abs(it.charPos - ctl.char) < 400 }
         AnimatedVisibility(uiVisible, Modifier.align(Alignment.TopCenter), enter = slideInVertically { -it } + fadeIn(), exit = slideOutVertically { -it } + fadeOut()) {
             TopPanel(
-                book.title, book.chapters.getOrNull(chapterIndex)?.title.orEmpty(), colors, marked, onBack,
+                book.title, book.chapters.getOrNull(chapterIndex)?.title.orEmpty(), colors, marked, onBack, simple = settings.simpleMode,
                 onSearch = { uiVisible = false; sheet = Sheet.SEARCH },
                 onBookmark = {
                     scope.launch {
@@ -293,9 +319,11 @@ private fun BookReader(
             val nextStart = book.chapters.getOrNull(chapterIndex + 1)?.startBlock ?: book.blocks.size
             val leftWords = wordsBefore[nextStart] - wordsBefore[ctl.block.coerceIn(0, book.blocks.size)]
             BottomPanel(
-                book, ctl, colors, minutesLeft = (leftWords.toFloat() / WPM).roundToInt(),
+                book, ctl, colors, minutesLeft = (leftWords.toFloat() / wpm).roundToInt(), personal = calibrated,
                 onText = { sheet = Sheet.TEXT; uiVisible = false }, onToc = { sheet = Sheet.TOC },
                 onAi = { aiPreset = null; sheet = Sheet.AI },
+                simple = settings.simpleMode,
+                onFont = { d -> onSettings(settings.copy(fontSize = (settings.fontSize + d).coerceIn(14f, 40f))) },
                 onToggleNight = { onSettings(settings.copy(theme = if (colors.isDark) ReaderTheme.PAPER else ReaderTheme.NIGHT)) },
             )
         }
@@ -372,6 +400,7 @@ private fun ScrollContent(
         }
     }
     ctl.sliderMax = total.toFloat()
+    ctl.pagesToChapter = null
     ctl.ticks = book.chapters.drop(1).map { it.startBlock.toFloat() / total }
     ctl.pageLabel = "${(ctl.sliderValue / total * 100).roundToInt()}%"
     ctl.jumpTo = { b, _ -> scope.launch { list.scrollToItem(b) } }
@@ -407,7 +436,7 @@ private fun ScrollContent(
 @Composable
 private fun rememberSpecs(s: ReaderSettings, c: PageColors): Map<Block.Kind, BlockSpec> {
     val density = LocalDensity.current
-    return remember(s.fontSize, s.lineHeight, s.font, s.justify, c, density) {
+    return remember(s.fontSize, s.lineHeight, s.font.family(), s.justify, c, density) {
         Block.Kind.entries.associateWith { blockSpec(it, s, c.text, c.muted, density) }
     }
 }
@@ -463,7 +492,7 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
         val colH = maxHeight - topPad - bottomPad
         val wPx = with(density) { colW.roundToPx() }
         val hPx = with(density) { colH.roundToPx() }
-        val key = PageKey(wPx, hPx, s.fontSize, s.lineHeight, s.font, s.justify)
+        val key = PageKey(wPx, hPx, s.fontSize, s.lineHeight, s.font.family(), s.justify)
 
         var progress by remember { mutableFloatStateOf(0f) }
         val pages by produceState<List<Page>?>(PageCache.pages.takeIf { PageCache.key == book to key }, book, key) {
@@ -515,6 +544,8 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
         ctl.sliderMax = (spreads - 1).coerceAtLeast(1).toFloat()
         ctl.ticks = chapterPages.map { it.toFloat() / ctl.sliderMax }
         ctl.pageLabel = "стр. ${spread * per + 1} из ${list.size}"
+        val nextChapterSpread = chapterPages.firstOrNull { it > spread } ?: spreads
+        ctl.pagesToChapter = ((nextChapterSpread - spread) * per).coerceAtLeast(1)
         ctl.jumpTo = { b, ch -> spread = (list.indexOfPosition(b, ch) / per).coerceIn(0, spreads - 1) }
         ctl.jumpToSlider = { v -> spread = v.roundToInt().coerceIn(0, spreads - 1) }
         ctl.visibleText = {
@@ -633,7 +664,7 @@ private fun Modifier.pageTransition(pager: PagerState, page: Int, anim: PageAnim
 // ---------------- Panels ----------------
 
 @Composable
-private fun TopPanel(title: String, chapter: String, c: PageColors, marked: Boolean, onBack: () -> Unit, onSearch: () -> Unit, onBookmark: () -> Unit) {
+private fun TopPanel(title: String, chapter: String, c: PageColors, marked: Boolean, onBack: () -> Unit, simple: Boolean = false, onSearch: () -> Unit, onBookmark: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().background(c.panel).statusBarsPadding().padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -643,6 +674,7 @@ private fun TopPanel(title: String, chapter: String, c: PageColors, marked: Bool
             Text(title, color = c.text, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(chapter, color = c.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
+        if (simple) return@Row
         RoundIcon(onSearch, c, "Поиск по книге") { Icon(Icons.Rounded.Search, null) }
         Spacer(Modifier.width(6.dp))
         RoundIcon(onBookmark, c, if (marked) "Убрать закладку" else "Добавить закладку") {
@@ -662,8 +694,9 @@ fun RoundIcon(onClick: () -> Unit, c: PageColors, label: String, icon: @Composab
 
 @Composable
 private fun BottomPanel(
-    book: ParsedBook, ctl: ReaderController, c: PageColors, minutesLeft: Int,
+    book: ParsedBook, ctl: ReaderController, c: PageColors, minutesLeft: Int, personal: Boolean,
     onText: () -> Unit, onToc: () -> Unit, onToggleNight: () -> Unit, onAi: () -> Unit,
+    simple: Boolean = false, onFont: (Float) -> Unit = {},
 ) {
     var dragging by remember { mutableStateOf(false) }
     var dragValue by remember { mutableFloatStateOf(0f) }
@@ -673,7 +706,16 @@ private fun BottomPanel(
     Column(Modifier.fillMaxWidth().background(c.panel).navigationBarsPadding().padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 8.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(label, color = c.muted, fontSize = 12.sp, maxLines = 1, modifier = Modifier.weight(1f))
-            Text("до конца главы ${formatMinutes(minutesLeft)}", color = c.muted, fontSize = 12.sp)
+            val pages = ctl.pagesToChapter
+            Text(
+                buildString {
+                    append("до конца главы ")
+                    if (pages != null) append("$pages стр. · ")
+                    append(formatMinutes(minutesLeft))
+                    if (personal) append(" (твой темп)")
+                },
+                color = c.muted, fontSize = 12.sp, maxLines = 1,
+            )
         }
         Box(contentAlignment = Alignment.Center) {
             Canvas(Modifier.fillMaxWidth().height(10.dp).padding(horizontal = 10.dp)) {
@@ -689,7 +731,13 @@ private fun BottomPanel(
                 colors = SliderDefaults.colors(thumbColor = c.accent, activeTrackColor = c.accent, inactiveTrackColor = c.text.copy(alpha = 0.15f)),
             )
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
+        if (simple) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
+            PanelButton("Мельче", c, { onFont(-2f) }) { Text("А−", color = c.text, fontSize = 20.sp) }
+            PanelButton("Крупнее", c, { onFont(2f) }) { Text("А+", color = c.text, fontSize = 20.sp) }
+            PanelButton(if (c.isDark) "Светлая" else "Ночь", c, onToggleNight) {
+                Icon(if (c.isDark) Icons.Rounded.LightMode else Icons.Rounded.DarkMode, null)
+            }
+        } else Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
             PanelButton("Текст", c, onText) { Icon(Icons.Rounded.TextFields, null) }
             PanelButton("Главы", c, onToc) { Icon(Icons.AutoMirrored.Rounded.FormatListBulleted, null) }
             PanelButton("ИИ", c, onAi) { Icon(Icons.Rounded.AutoAwesome, null) }

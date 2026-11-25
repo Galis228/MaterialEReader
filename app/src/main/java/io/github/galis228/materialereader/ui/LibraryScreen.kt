@@ -85,6 +85,8 @@ fun LibraryScreen(onOpen: (String) -> Unit, onCatalog: () -> Unit, onSettings: (
     val scanning by library.scanning.collectAsState()
     var filter by rememberSaveable { mutableStateOf(Filter.ALL) }
     var toDelete by remember { mutableStateOf<BookEntry?>(null) }
+    var menuFor by remember { mutableStateOf<BookEntry?>(null) }
+    val simple = remember { io.github.galis228.materialereader.data.SettingsRepo(ctx) }.settings.collectAsState(initial = null).value?.simpleMode == true
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
@@ -139,7 +141,7 @@ fun LibraryScreen(onOpen: (String) -> Unit, onCatalog: () -> Unit, onSettings: (
                 return@Column
             }
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(104.dp),
+                columns = GridCells.Adaptive(if (simple) 150.dp else 104.dp),
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 104.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -147,8 +149,8 @@ fun LibraryScreen(onOpen: (String) -> Unit, onCatalog: () -> Unit, onSettings: (
                 if (current != null) item(span = { GridItemSpan(maxLineSpan) }) {
                     ContinueCard(current) { onOpen(current.id) }
                 }
-                item(span = { GridItemSpan(maxLineSpan) }) { StatsRow(books) }
-                item(span = { GridItemSpan(maxLineSpan) }) {
+                if (!simple) item(span = { GridItemSpan(maxLineSpan) }) { StatsRow(books) }
+                if (!simple) item(span = { GridItemSpan(maxLineSpan) }) {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(Filter.entries) { f ->
                             FilterChip(selected = filter == f, onClick = { filter = f }, label = { Text(f.label) })
@@ -160,10 +162,11 @@ fun LibraryScreen(onOpen: (String) -> Unit, onCatalog: () -> Unit, onSettings: (
                         modifier = Modifier.padding(vertical = 24.dp), textAlign = TextAlign.Center)
                 }
                 items(shown, key = { it.id }) { b ->
-                    Column(Modifier.combinedClickable(onClick = { onOpen(b.id) }, onLongClick = { toDelete = b })) {
+                    Column(Modifier.combinedClickable(onClick = { onOpen(b.id) }, onLongClick = { menuFor = b })) {
                         BookCover(b, Modifier.fillMaxWidth().aspectRatio(0.68f))
                         Spacer(Modifier.height(6.dp))
-                        Text(b.title, style = MaterialTheme.typography.labelLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(b.title, style = if (simple) MaterialTheme.typography.titleMedium else MaterialTheme.typography.labelLarge,
+                            maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Text(
                             when {
                                 b.finished -> "прочитана"
@@ -177,6 +180,12 @@ fun LibraryScreen(onOpen: (String) -> Unit, onCatalog: () -> Unit, onSettings: (
                 }
             }
         }
+    }
+
+    menuFor?.let { b ->
+        // keep the sheet showing fresh data (cover, read mark) for the same book
+        val fresh = books.firstOrNull { it.id == b.id } ?: b
+        BookMenuSheet(fresh, onOpen = { onOpen(b.id) }, onDelete = { toDelete = fresh }) { menuFor = null }
     }
 
     toDelete?.let { b ->
@@ -203,7 +212,8 @@ private fun ContinueCard(b: BookEntry, onRead: () -> Unit) {
             Column(Modifier.weight(1f).height(124.dp)) {
                 Text("Продолжить чтение", style = MaterialTheme.typography.labelMedium, color = cs.onPrimary.copy(alpha = 0.8f))
                 Text(b.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                val left = ((1f - b.progress) * b.words / WPM).roundToInt()
+                val wpm = io.github.galis228.materialereader.data.ReadingSpeed.wpm(LocalContext.current)
+                val left = ((1f - b.progress) * b.words / wpm).roundToInt()
                 Text(
                     if (b.isComic) "стр. ${b.position + 1} из ${b.totalBlocks}"
                     else "${(b.progress * 100).roundToInt()}% · ${formatMinutes(left)} до конца",

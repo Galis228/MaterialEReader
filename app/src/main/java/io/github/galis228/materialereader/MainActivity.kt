@@ -38,11 +38,13 @@ object VolumeKeys {
 
 class MainActivity : ComponentActivity() {
     private var incoming by mutableStateOf<Uri?>(null)
+    private var incomingImage by mutableStateOf<Uri?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        incoming = incomingUri(intent)
+        io.github.galis228.materialereader.ui.initCustomFont(this)
+        route(intent)
         setContent {
             AppTheme {
                 val nav = rememberNavController()
@@ -78,6 +80,10 @@ class MainActivity : ComponentActivity() {
                     composable("settings") { AppSettingsScreen(onBack = { nav.popBackStack() }) }
                 }
                 update?.let { UpdateDialog(it) { update = null } }
+                incomingImage?.let { img ->
+                    val target = remember(img) { io.github.galis228.materialereader.ui.PendingCover.take() }
+                    io.github.galis228.materialereader.ui.SharedCoverDialog(img, target) { incomingImage = null }
+                }
             }
         }
     }
@@ -91,7 +97,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        incomingUri(intent)?.let { incoming = it }
+        route(intent)
+    }
+
+    /** Books go to the library; a shared picture becomes a cover. */
+    private fun route(i: Intent?) {
+        val uri = incomingUri(i) ?: return
+        val type = i?.type ?: contentResolver.getType(uri)
+        if (type?.startsWith("image/") == true) incomingImage = uri else incoming = uri
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {

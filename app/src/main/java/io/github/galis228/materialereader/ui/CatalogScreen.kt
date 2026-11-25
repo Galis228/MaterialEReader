@@ -144,6 +144,14 @@ fun CatalogScreen(onBack: () -> Unit, onOpenBook: (String) -> Unit) {
                 shape = RoundedCornerShape(28.dp),
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
             )
+            if (catalog?.url?.startsWith("wikisource:ru") == true || catalog?.url?.contains("gutenberg") == true) LazyRow(
+                contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(Opds.classics.size) { i ->
+                    val name = Opds.classics[i]
+                    androidx.compose.material3.SuggestionChip(onClick = { query = name; search() }, label = { Text(name) })
+                }
+            }
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
             error?.let { msg ->
                 Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -154,6 +162,11 @@ fun CatalogScreen(onBack: () -> Unit, onOpenBook: (String) -> Unit) {
             if (stack.size > 1) Text(
                 feed?.title.orEmpty(), style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp), maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            if (!loading && error == null && entries.isEmpty() && feed != null) Text(
+                if (stack.size <= 1) "Введи название или автора — или выбери классика выше. Книги бесплатные: срок авторских прав на них истёк."
+                else "Ничего не нашлось",
+                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(24.dp),
             )
             LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
                 items(entries, key = { it.id + it.title }) { e ->

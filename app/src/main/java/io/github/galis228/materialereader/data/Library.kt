@@ -48,9 +48,13 @@ data class BookEntry(
     val sourceUri: String? = null,
     val bookmarks: List<Bookmark> = emptyList(),
     val highlights: List<Highlight> = emptyList(),
+    /** 0 = by progress, 1 = marked as read, 2 = marked as unread. */
+    val readMark: Int = 0,
+    /** Bumped on every cover change so cached images refresh. */
+    val coverRev: Long = 0L,
 ) {
     val started get() = lastOpenedAt > 0L
-    val finished get() = progress >= 0.98f
+    val finished get() = when (readMark) { 1 -> true; 2 -> false; else -> progress >= 0.98f }
     val isComic get() = format.isComic
 }
 
@@ -157,6 +161,29 @@ class Library private constructor(private val ctx: Context) {
         e.copy(highlights = if (color < 0) rest else (rest + Highlight(block, color, note, old?.createdAt ?: System.currentTimeMillis())).sortedBy { it.block })
     }
 
+    suspend fun setReadMark(id: String, mark: Int) = editBook(id) { it.copy(readMark = mark) }
+
+    /** Replaces the cover with an image (any format Android can decode). */
+    suspend fun setCover(id: String, bytes: ByteArray): Boolean {
+        val ok = withContext(Dispatchers.IO) { saveCover(id, bytes) }
+        if (ok) editBook(id) { it.copy(hasCover = true, coverRev = System.currentTimeMillis()) }
+        return ok
+    }
+
+    /** Takes the cover from the book file again (or removes it if the book has none). */
+    suspend fun resetCover(id: String) {
+        val e = entry(id) ?: return
+        val bytes = withContext(Dispatchers.IO) {
+            runCatching {
+                if (e.isComic) ComicArchive.open(bookFile(e), e.format).use { it.page(0) }
+                else BookParser.parse(bookFile(e).readBytes(), e.fileName, e.format).cover
+            }.getOrNull()
+        }
+        val ok = bytes != null && withContext(Dispatchers.IO) { saveCover(id, bytes) }
+        if (!ok) withContext(Dispatchers.IO) { coverFile(id).delete() }
+        editBook(id) { it.copy(hasCover = ok, coverRev = System.currentTimeMillis()) }
+    }
+
     private suspend fun editBook(id: String, f: (BookEntry) -> BookEntry) = mutex.withLock {
         _books.update { list -> list.map { if (it.id == id) f(it) else it } }
         withContext(Dispatchers.IO) { save() }
@@ -239,7 +266,7 @@ class Library private constructor(private val ctx: Context) {
         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
         var sample = 1
-        while (opts.outWidth / sample > 600) sample *= 2
+        while (opts.outWidth / sample > 900) sample *= 2
         val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
             ?: return false
         coverFile(id).outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 90, it) }
@@ -261,6 +288,7 @@ class Library private constructor(private val ctx: Context) {
             put("pos", b.position); put("off", b.offset); put("char", b.charPos); put("progress", b.progress.toDouble())
             put("added", b.addedAt); put("opened", b.lastOpenedAt); put("millis", b.readingMillis)
             b.sourceUri?.let { put("source", it) }
+            put("readMark", b.readMark); put("coverRev", b.coverRev)
             put("highlights", JSONArray().apply {
                 b.highlights.forEach { h -> put(JSONObject().put("block", h.block).put("color", h.color).put("note", h.note).put("created", h.createdAt)) }
             })
@@ -298,6 +326,7 @@ class Library private constructor(private val ctx: Context) {
                         val h = hl.getJSONObject(j)
                         Highlight(h.getInt("block"), h.optInt("color"), h.optString("note"), h.optLong("created"))
                     },
+                    o.optInt("readMark"), o.optLong("coverRev"),
                 )
             }.getOrNull()
         }

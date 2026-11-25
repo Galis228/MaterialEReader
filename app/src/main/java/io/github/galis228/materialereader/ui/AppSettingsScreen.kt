@@ -112,6 +112,25 @@ fun AppSettingsScreen(onBack: () -> Unit) {
         snackbarHost = { SnackbarHost(snackbar) },
     ) { pad ->
         LazyColumn(Modifier.padding(pad).fillMaxSize()) {
+            item {
+                val repo = remember { io.github.galis228.materialereader.data.SettingsRepo(ctx) }
+                val rs by repo.settings.collectAsState(initial = null)
+                rs?.let { r ->
+                    ListItem(
+                        headlineContent = { Text("Простой режим") },
+                        supportingContent = { Text("Крупные обложки и шрифт, светлая тема, только самые нужные кнопки. Удобно для пожилых и детей.") },
+                        trailingContent = { Switch(checked = r.simpleMode, onCheckedChange = null) },
+                        modifier = Modifier.clickable {
+                            val on = !r.simpleMode
+                            scope.launch {
+                                repo.update(if (on) r.copy(simpleMode = true, fontSize = maxOf(r.fontSize, 24f), theme = io.github.galis228.materialereader.data.ReaderTheme.LIGHT,
+                                    justify = false, textColor = 0L, bgColor = 0L, tapToTurn = true) else r.copy(simpleMode = false))
+                            }
+                        },
+                    )
+                }
+            }
+            item { HorizontalDivider(Modifier.padding(vertical = 4.dp)) }
             item { Section("Автопоиск книг") }
             item {
                 Text(

@@ -41,7 +41,7 @@ private val coverPalette = listOf(
 @Composable
 fun BookCover(book: BookEntry, modifier: Modifier = Modifier, corner: Dp = 12.dp, titleSize: Int = 13) {
     val ctx = LocalContext.current
-    val bitmap by produceState<ImageBitmap?>(null, book.id, book.hasCover) {
+    val bitmap by produceState<ImageBitmap?>(null, book.id, book.hasCover, book.coverRev) {
         if (book.hasCover) value = withContext(Dispatchers.IO) {
             runCatching { BitmapFactory.decodeFile(Library.get(ctx).coverFile(book.id).path)?.asImageBitmap() }.getOrNull()
         }

@@ -8,3 +8,7 @@
 - Закладки, оглавление, прогресс с отметками глав, время до конца главы
 - Автопоиск книг в выбранных папках, каталоги OPDS
 - Автообновление из GitHub Releases
+
+## Шрифты
+
+Встроенные шрифты (Literata, PT Serif, PT Sans, Lora, EB Garamond, Fira Sans, Andika) распространяются по лицензии SIL Open Font License 1.1 — тексты лицензий в папке `fonts-licenses`.

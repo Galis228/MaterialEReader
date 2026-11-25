@@ -41,6 +41,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -130,14 +131,12 @@ fun TextSettingsSheet(s: ReaderSettings, onChange: (ReaderSettings) -> Unit, onD
                     LabeledSlider("Тёплый фильтр", s.warmth, 0f..1f, { if (it < 0.01f) "выкл" else "${(it * 100).roundToInt()}%" }) {
                         onChange(s.copy(warmth = it))
                     }
-                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                        ReaderFont.entries.forEachIndexed { i, f ->
-                            SegmentedButton(
-                                selected = s.font == f, onClick = { onChange(s.copy(font = f)) },
-                                shape = SegmentedButtonDefaults.itemShape(i, ReaderFont.entries.size),
-                            ) { Text(f.label, fontFamily = f.family(), maxLines = 1) }
-                        }
-                    }
+                    Text("Шрифт", style = MaterialTheme.typography.titleSmall)
+                    FontPicker(s, onChange)
+                    Text("Цвет текста", style = MaterialTheme.typography.titleSmall)
+                    ColorRow(TextPalette, s.textColor) { onChange(s.copy(textColor = it)) }
+                    Text("Цвет фона", style = MaterialTheme.typography.titleSmall)
+                    ColorRow(BgPalette, s.bgColor) { onChange(s.copy(bgColor = it)) }
                 }
                 1 -> {
                     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
@@ -253,6 +252,68 @@ fun TocSheet(
                     }
                 }
             }
+        }
+    }
+}
+
+private val TextPalette = listOf(0xFF111111, 0xFF2B2118, 0xFF3E2C1C, 0xFF1F2A44, 0xFF23402B, 0xFF5B1F1F,
+    0xFFE8E4DC, 0xFFB9B4AA, 0xFFF2D9A0, 0xFFA8D3AE, 0xFF9DB4FF, 0xFFFFB3A7)
+private val BgPalette = listOf(0xFFFFFFFF, 0xFFFBF8F1, 0xFFF4EAD6, 0xFFE9DCC0, 0xFFE4EEDF, 0xFFE3ECF7,
+    0xFF2A2A2E, 0xFF1E2A22, 0xFF1B2233, 0xFF2B2018, 0xFF121212, 0xFF000000)
+
+@Composable
+private fun ColorRow(palette: List<Long>, selected: Long, onPick: (Long) -> Unit) {
+    androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        item {
+            Box(
+                Modifier.size(36.dp).clip(CircleShape).border(BorderStroke(if (selected == 0L) 3.dp else 1.dp,
+                    if (selected == 0L) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant), CircleShape)
+                    .clickable { onPick(0L) },
+                contentAlignment = Alignment.Center,
+            ) { Text("Авто", fontSize = 9.sp) }
+        }
+        items(palette.size) { i ->
+            val c = palette[i]
+            Box(
+                Modifier.size(36.dp).clip(CircleShape).background(androidx.compose.ui.graphics.Color(c.toInt()))
+                    .border(BorderStroke(if (selected == c) 3.dp else 1.dp,
+                        if (selected == c) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant), CircleShape)
+                    .clickable { onPick(c) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun FontPicker(s: ReaderSettings, onChange: (ReaderSettings) -> Unit) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val picker = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val ok = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    val f = customFontFile(ctx).apply { parentFile?.mkdirs() }
+                    ctx.contentResolver.openInputStream(uri)!!.use { input -> f.outputStream().use { input.copyTo(it) } }
+                    // make sure Android can actually read it
+                    android.graphics.Typeface.createFromFile(f) != null
+                }.getOrDefault(false)
+            }
+            if (ok) { initCustomFont(ctx); onChange(s.copy(font = ReaderFont.CUSTOM)) }
+            else android.widget.Toast.makeText(ctx, "Это не похоже на файл шрифта (нужен TTF или OTF)", android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+    androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        items(ReaderFont.entries.size) { i ->
+            val f = ReaderFont.entries[i]
+            FilterChip(
+                selected = s.font == f,
+                onClick = {
+                    if (f == ReaderFont.CUSTOM) picker.launch(arrayOf("font/ttf", "font/otf", "application/x-font-ttf", "application/x-font-otf", "application/octet-stream", "font/*"))
+                    else onChange(s.copy(font = f))
+                },
+                label = { Text(if (f == ReaderFont.CUSTOM) "+ Свой шрифт…" else "Аа ${f.label}", fontFamily = if (f == ReaderFont.CUSTOM) null else f.family()) },
+            )
         }
     }
 }

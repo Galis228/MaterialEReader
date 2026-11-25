@@ -11,7 +11,12 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontVariation
+import androidx.compose.ui.text.font.FontWeight
+import io.github.galis228.materialereader.R
 import io.github.galis228.materialereader.data.ReaderFont
 import io.github.galis228.materialereader.data.ReaderTheme
 
@@ -54,8 +59,55 @@ fun pageColors(theme: ReaderTheme, scheme: ColorScheme): PageColors = when (them
 
 private fun Color.luminance(): Float = 0.2126f * red + 0.7152f * green + 0.0722f * blue
 
+@OptIn(androidx.compose.ui.text.ExperimentalTextApi::class)
+private fun variable(regular: Int, italic: Int) = FontFamily(
+    listOf(400, 600, 700).flatMap { w ->
+        listOf(
+            Font(regular, FontWeight(w), FontStyle.Normal, variationSettings = FontVariation.Settings(FontVariation.weight(w))),
+            Font(italic, FontWeight(w), FontStyle.Italic, variationSettings = FontVariation.Settings(FontVariation.weight(w))),
+        )
+    },
+)
+
+private val literata by lazy { variable(R.font.literata, R.font.literata_italic) }
+private val lora by lazy { variable(R.font.lora, R.font.lora_italic) }
+private val garamond by lazy { variable(R.font.ebgaramond, R.font.ebgaramond_italic) }
+private val ptSerif by lazy { FontFamily(Font(R.font.ptserif_regular), Font(R.font.ptserif_italic, style = FontStyle.Italic), Font(R.font.ptserif_bold, FontWeight.Bold), Font(R.font.ptserif_bold, FontWeight.SemiBold)) }
+private val ptSans by lazy { FontFamily(Font(R.font.ptsans_regular), Font(R.font.ptsans_italic, style = FontStyle.Italic), Font(R.font.ptsans_bold, FontWeight.Bold), Font(R.font.ptsans_bold, FontWeight.SemiBold)) }
+private val andika by lazy { FontFamily(Font(R.font.andika_regular), Font(R.font.andika_italic, style = FontStyle.Italic), Font(R.font.andika_bold, FontWeight.Bold), Font(R.font.andika_bold, FontWeight.SemiBold)) }
+private val fira by lazy { FontFamily(Font(R.font.firasans_regular), Font(R.font.firasans_italic, style = FontStyle.Italic), Font(R.font.firasans_semibold, FontWeight.SemiBold), Font(R.font.firasans_semibold, FontWeight.Bold)) }
+
+/** A font file the reader picked; set by [setCustomFont]. */
+@Volatile private var custom: Pair<String, FontFamily>? = null
+fun customFontFile(ctx: android.content.Context) = java.io.File(ctx.filesDir, "fonts/custom_font")
+private var customPath: String? = null
+fun initCustomFont(ctx: android.content.Context) { customPath = customFontFile(ctx).takeIf { it.exists() }?.path }
+
 fun ReaderFont.family(): FontFamily = when (this) {
+    ReaderFont.LITERATA -> literata
+    ReaderFont.PT_SERIF -> ptSerif
+    ReaderFont.LORA -> lora
+    ReaderFont.GARAMOND -> garamond
+    ReaderFont.PT_SANS -> ptSans
+    ReaderFont.FIRA -> fira
+    ReaderFont.ANDIKA -> andika
     ReaderFont.SERIF -> FontFamily.Serif
     ReaderFont.SANS -> FontFamily.SansSerif
     ReaderFont.MONO -> FontFamily.Monospace
+    ReaderFont.CUSTOM -> customPath?.let { p ->
+        val f = java.io.File(p)
+        val key = "$p:${f.lastModified()}"
+        custom?.takeIf { it.first == key }?.second
+            ?: runCatching { FontFamily(Font(f)) }.getOrNull()?.also { custom = key to it }
+    } ?: FontFamily.Serif
+}
+
+/** Theme colors with the reader's own text/background colors applied on top. */
+fun pageColors(s: io.github.galis228.materialereader.data.ReaderSettings, scheme: ColorScheme): PageColors {
+    val base = pageColors(s.theme, scheme)
+    if (s.textColor == 0L && s.bgColor == 0L) return base
+    val bg = if (s.bgColor != 0L) Color(s.bgColor.toInt()) else base.bg
+    val dark = bg.luminance() < 0.4f
+    val text = if (s.textColor != 0L) Color(s.textColor.toInt()) else if (s.bgColor != 0L) (if (dark) Color(0xFFDDD8CF) else Color(0xFF222222)) else base.text
+    return PageColors(bg, text, text.copy(alpha = 0.65f), base.accent, androidx.compose.ui.graphics.lerp(bg, text, 0.07f), dark)
 }
