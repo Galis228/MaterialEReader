@@ -67,7 +67,10 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     composable("reader/{id}") { entry ->
-                        ReaderScreen(id = entry.arguments?.getString("id").orEmpty(), onBack = { nav.popBackStack() })
+                        ReaderScreen(
+                            id = entry.arguments?.getString("id").orEmpty(), onBack = { nav.popBackStack() },
+                            onAppSettings = { nav.navigate("settings") },
+                        )
                     }
                     composable("catalog") {
                         CatalogScreen(onBack = { nav.popBackStack() }, onOpenBook = { id -> nav.navigate("reader/$id") })

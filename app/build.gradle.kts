@@ -18,15 +18,16 @@ val updateRepo: String = (findProperty("updateRepo") as String?) ?: System.geten
 
 android {
     namespace = "io.github.galis228.materialereader"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "io.github.galis228.materialereader"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        targetSdk = 36
+        versionCode = 3
+        versionName = "0.3.0"
         buildConfigField("String", "UPDATE_REPO", "\"$updateRepo\"")
+        ndk { abiFilters += "arm64-v8a" }
     }
 
     signingConfigs {
@@ -54,17 +55,23 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions { jvmTarget = "17" }
     buildFeatures {
         compose = true
         buildConfig = true
     }
-    packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+    packaging {
+        resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        jniLibs { useLegacyPackaging = false }
+    }
     lint { checkReleaseBuilds = false }
 }
 
+kotlin {
+    compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) }
+}
+
 dependencies {
-    val composeBom = platform("androidx.compose:compose-bom:2025.05.00")
+    val composeBom = platform("androidx.compose:compose-bom:2026.03.00")
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
@@ -80,6 +87,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jsoup:jsoup:1.20.1")
     implementation("com.github.junrar:junrar:7.5.5")
+    // ИИ, как в НаноПеро: Gemini Nano (AICore) и модели .litertlm (Gemma 4, Qwen 3); GGUF — через libnanollama.so
+    implementation("com.google.mlkit:genai-prompt:1.0.0-beta5")
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.19.1")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20250517")

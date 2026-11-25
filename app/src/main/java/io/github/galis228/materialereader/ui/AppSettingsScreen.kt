@@ -44,6 +44,23 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.rounded.FolderShared
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.OutlinedCard
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.Alignment
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import io.github.galis228.materialereader.ai.Ai
+import io.github.galis228.materialereader.ai.EngineChoice
+import io.github.galis228.materialereader.ai.SharedModels
 import io.github.galis228.materialereader.data.Catalog
 import io.github.galis228.materialereader.data.Library
 import io.github.galis228.materialereader.data.Opds
@@ -126,6 +143,10 @@ fun AppSettingsScreen(onBack: () -> Unit) {
             item { TextButton(onClick = { addCatalog = true }, modifier = Modifier.padding(horizontal = 8.dp)) { Icon(Icons.Rounded.Add, null); Text(" Добавить каталог") } }
             item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
 
+            item { Section("ИИ-помощник") }
+            item { AiSettingsBlock() }
+            item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
+
             item { Section("Обновления") }
             item {
                 ListItem(
@@ -186,4 +207,90 @@ private fun AddCatalogDialog(onDismiss: () -> Unit, onAdd: (Catalog) -> Unit) {
         confirmButton = { TextButton(enabled = valid, onClick = { onAdd(Catalog(name.trim(), url)) }) { Text("Добавить") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } },
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AiSettingsBlock() {
+    val ctx = LocalContext.current
+    val ai = remember { Ai.get(ctx) }
+    var engine by remember { mutableStateOf(ai.settings.engine) }
+    var model by remember { mutableStateOf(ai.settings.model) }
+    var ctxTokens by remember { mutableStateOf(ai.settings.ctxTokens) }
+    var gpu by remember { mutableStateOf(ai.settings.useGpu) }
+    var access by remember { mutableStateOf(SharedModels.hasAccess()) }
+    var nano by remember { mutableStateOf<Boolean?>(null) }
+    var models by remember { mutableStateOf(ai.local.models()) }
+    val scope = rememberCoroutineScope()
+
+    // Back from system settings: re-check the "All files" permission and rescan the folder
+    val owner = LocalLifecycleOwner.current
+    LaunchedEffect(owner) {
+        owner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            access = SharedModels.hasAccess(); models = ai.local.models()
+        }
+    }
+    LaunchedEffect(Unit) { nano = ai.nano.available() }
+
+    Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            EngineChoice.entries.forEachIndexed { i, e ->
+                SegmentedButton(selected = engine == e, onClick = { engine = e; ai.settings.engine = e },
+                    shape = SegmentedButtonDefaults.itemShape(i, EngineChoice.entries.size)) { Text(e.label, maxLines = 1) }
+            }
+        }
+        Text(
+            "Gemini Nano: " + when (nano) { null -> "проверяю…"; true -> "готова"; false -> "недоступна на этом телефоне" },
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedCard(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.FolderShared, null); Spacer(Modifier.width(8.dp))
+                    Text("Общая папка моделей", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                    if (access) Text("включена", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                }
+                Text("«${SharedModels.path}» — та же папка, что у НаноПеро и «Персоны». Скачанные там модели (.gguf, .litertlm) " +
+                    "появятся здесь без повторной загрузки.", style = MaterialTheme.typography.bodySmall)
+                if (!access) {
+                    Text("Нужно разрешение «Доступ ко всем файлам» — иначе Android не даёт читать файлы, скачанные другим приложением.",
+                        style = MaterialTheme.typography.bodySmall)
+                    FilledTonalButton(onClick = { SharedModels.requestAccess(ctx) }) { Text("Открыть доступ к папке") }
+                }
+            }
+        }
+        if (models.isEmpty()) Text(
+            if (access) "В папке пока нет моделей. Скачай модель в НаноПеро или «Персоне» — она сразу появится тут."
+            else "Модели появятся после того, как откроешь доступ к общей папке.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        models.forEach { f ->
+            Row(
+                Modifier.fillMaxWidth().clickable { model = f.name; ai.settings.model = f.name; scope.launch { ai.local.release() } },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(selected = model == f.name, onClick = null)
+                Column(Modifier.weight(1f).padding(start = 8.dp)) {
+                    Text(f.name.substringBeforeLast('.'), maxLines = 1)
+                    Text("%.1f ГБ · %s".format(f.length() / 1073741824f, f.extension.uppercase()),
+                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+        Text("Контекст (сколько текста модель видит за раз)", style = MaterialTheme.typography.bodyMedium)
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            listOf(2048, 4096, 8192).forEachIndexed { i, n ->
+                SegmentedButton(selected = ctxTokens == n, onClick = { ctxTokens = n; ai.settings.ctxTokens = n; scope.launch { ai.local.release() } },
+                    shape = SegmentedButtonDefaults.itemShape(i, 3)) { Text("$n") }
+            }
+        }
+        Row(Modifier.fillMaxWidth().clickable { gpu = !gpu; ai.settings.useGpu = gpu }, verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Ускорение на GPU")
+                Text("Для моделей .litertlm (Gemma 4). Если модель не запускается — выключи.",
+                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Switch(checked = gpu, onCheckedChange = null)
+        }
+    }
 }

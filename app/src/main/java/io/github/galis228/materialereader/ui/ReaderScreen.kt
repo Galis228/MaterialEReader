@@ -43,6 +43,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.FormatListBulleted
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.BookmarkBorder
 import androidx.compose.material.icons.rounded.DarkMode
@@ -127,7 +128,7 @@ private sealed interface LoadState {
 }
 
 @Composable
-fun ReaderScreen(id: String, onBack: () -> Unit) {
+fun ReaderScreen(id: String, onBack: () -> Unit, onAppSettings: () -> Unit = {}) {
     val ctx = LocalContext.current
     val library = remember { Library.get(ctx) }
     val repo = remember { SettingsRepo(ctx) }
@@ -158,7 +159,7 @@ fun ReaderScreen(id: String, onBack: () -> Unit) {
             }
             is LoadState.Ready -> BookReader(
                 id = id, book = st.book, startBlock = entry?.position ?: 0, startOffset = entry?.offset ?: 0,
-                startChar = entry?.charPos ?: 0, settings = s, colors = colors, onSettings = onSettings, onBack = onBack,
+                startChar = entry?.charPos ?: 0, settings = s, colors = colors, onSettings = onSettings, onBack = onBack, onAppSettings = onAppSettings,
             )
         }
     }
@@ -175,6 +176,7 @@ class ReaderController {
     var jumpToSlider: (Float) -> Unit = {}
     var jumpTo: (block: Int, char: Int) -> Unit = { _, _ -> }
     var turn: (dir: Int) -> Unit = {}
+    var visibleText: () -> String = { "" }
 }
 
 @OptIn(FlowPreview::class)
@@ -182,7 +184,7 @@ class ReaderController {
 private fun BookReader(
     id: String, book: ParsedBook, startBlock: Int, startOffset: Int, startChar: Int,
     settings: ReaderSettings, colors: PageColors,
-    onSettings: (ReaderSettings) -> Unit, onBack: () -> Unit,
+    onSettings: (ReaderSettings) -> Unit, onBack: () -> Unit, onAppSettings: () -> Unit,
 ) {
     val library = Library.get(LocalContext.current)
     val scope = rememberCoroutineScope()
@@ -263,7 +265,8 @@ private fun BookReader(
             val leftWords = wordsBefore[nextStart] - wordsBefore[ctl.block.coerceIn(0, book.blocks.size)]
             BottomPanel(
                 book, ctl, colors, minutesLeft = (leftWords.toFloat() / WPM).roundToInt(),
-                onText = { sheet = Sheet.TEXT }, onToc = { sheet = Sheet.TOC },
+                onText = { sheet = Sheet.TEXT; uiVisible = false }, onToc = { sheet = Sheet.TOC },
+                onAi = { sheet = Sheet.AI },
                 onToggleNight = { onSettings(settings.copy(theme = if (colors.isDark) ReaderTheme.PAPER else ReaderTheme.NIGHT)) },
             )
         }
@@ -277,11 +280,16 @@ private fun BookReader(
             onPickBookmark = { m -> sheet = null; uiVisible = false; ctl.jumpTo(m.block, m.charPos) },
             onDeleteBookmark = { m -> scope.launch { library.removeBookmark(id, m.createdAt) } },
         ) { sheet = null }
+        Sheet.AI -> AiSheet(
+            book, ctl.block, book.chapters.getOrNull(chapterIndex)?.startBlock ?: 0,
+            pageText = { ctl.visibleText() },
+            onOpenSettings = { sheet = null; onAppSettings() },
+        ) { sheet = null }
         null -> {}
     }
 }
 
-private enum class Sheet { TEXT, TOC }
+private enum class Sheet { TEXT, TOC, AI }
 
 @Composable
 fun SystemBars(visible: Boolean, dark: Boolean, keepScreenOn: Boolean) {
@@ -329,6 +337,7 @@ private fun ScrollContent(
     ctl.pageLabel = "${(ctl.sliderValue / total * 100).roundToInt()}%"
     ctl.jumpTo = { b, _ -> scope.launch { list.scrollToItem(b) } }
     ctl.jumpToSlider = { v -> scope.launch { list.scrollToItem(v.roundToInt()) } }
+    ctl.visibleText = { list.layoutInfo.visibleItemsInfo.joinToString("\n") { book.blocks[it.index].text } }
     ctl.turn = { dir ->
         scope.launch {
             val step = list.layoutInfo.viewportSize.height - with(density) { (s.fontSize * s.lineHeight * 1.5f).sp.toPx() }
@@ -415,8 +424,16 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
             if (PageCache.key == book to key) { value = PageCache.pages; return@produceState }
             value = null
             val measurer = TextMeasurer(fontResolver, density, layoutDir, cacheSize = 0)
+            val paginator = Paginator(measurer, specs, wPx, hPx)
+            // The current chapter first, so the text shows up (and settings changes preview) right away
+            val ch = book.chapters.indexOfLast { it.startBlock <= ctl.block }.coerceAtLeast(0)
+            val from = book.chapters.getOrNull(ch)?.startBlock ?: 0
+            val to = book.chapters.getOrNull(ch + 1)?.startBlock ?: book.blocks.size
+            if (from > 0 || to < book.blocks.size) {
+                value = withContext(Dispatchers.Default) { paginator.paginate(book, from, to) }
+            }
             val result = withContext(Dispatchers.Default) {
-                Paginator(measurer, specs, wPx, hPx).paginate(book) { progress = it }
+                paginator.paginate(book) { progress = it }
             }
             PageCache.key = book to key; PageCache.pages = result
             value = result
@@ -434,16 +451,15 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
 
         val per = if (two) 2 else 1
         val spreads = (list.size + per - 1) / per
-        val startSpread = list.indexOfPosition(ctl.block, ctl.char) / per
-        val pager = rememberPagerState(initialPage = startSpread) { spreads }
+        var spread by remember { mutableIntStateOf((list.indexOfPosition(ctl.block, ctl.char) / per).coerceIn(0, spreads - 1)) }
         val scope = rememberCoroutineScope()
         val anim = rememberUpdatedState(s.anim)
+        var curlTurn by remember { mutableStateOf<(Int) -> Unit>({}) }
 
         // After re-pagination (font change, rotation) keep the reading position
+        LaunchedEffect(list, per) { spread = (list.indexOfPosition(ctl.block, ctl.char) / per).coerceIn(0, spreads - 1) }
         LaunchedEffect(list, per) {
-            val target = list.indexOfPosition(ctl.block, ctl.char) / per
-            if (pager.currentPage != target) pager.scrollToPage(target.coerceIn(0, spreads - 1))
-            snapshotFlow { pager.currentPage }.collect { sp ->
+            snapshotFlow { spread }.collect { sp ->
                 val p = list[(sp * per).coerceAtMost(list.lastIndex)]
                 ctl.block = p.firstBlock; ctl.char = p.firstChar
                 ctl.sliderValue = sp.toFloat()
@@ -452,27 +468,18 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
         val chapterPages = remember(list, per) { book.chapters.drop(1).map { list.indexOfPosition(it.startBlock, 0) / per } }
         ctl.sliderMax = (spreads - 1).coerceAtLeast(1).toFloat()
         ctl.ticks = chapterPages.map { it.toFloat() / ctl.sliderMax }
-        ctl.pageLabel = "стр. ${pager.currentPage * per + 1} из ${list.size}"
-        ctl.jumpTo = { b, ch -> scope.launch { pager.scrollToPage(list.indexOfPosition(b, ch) / per) } }
-        ctl.jumpToSlider = { v -> scope.launch { pager.scrollToPage(v.roundToInt().coerceIn(0, spreads - 1)) } }
-        ctl.turn = { dir ->
-            scope.launch {
-                val t = (pager.currentPage + dir).coerceIn(0, spreads - 1)
-                if (anim.value == PageAnim.NONE) pager.scrollToPage(t) else pager.animateScrollToPage(t)
+        ctl.pageLabel = "стр. ${spread * per + 1} из ${list.size}"
+        ctl.jumpTo = { b, ch -> spread = (list.indexOfPosition(b, ch) / per).coerceIn(0, spreads - 1) }
+        ctl.jumpToSlider = { v -> spread = v.roundToInt().coerceIn(0, spreads - 1) }
+        ctl.visibleText = {
+            (0 until per).mapNotNull { list.getOrNull(spread * per + it) }.joinToString("\n") { pg ->
+                pg.slices.joinToString("\n") { sl -> book.blocks[sl.block].text.let { t -> t.substring(sl.start.coerceAtMost(t.length), sl.end.coerceAtMost(t.length)) } }
             }
         }
 
         val w = constraints.maxWidth.toFloat()
-        HorizontalPager(
-            state = pager,
-            modifier = Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures { onTap(it.x / w) } },
-            beyondViewportPageCount = 1,
-        ) { sp ->
-            Box(
-                Modifier.fillMaxSize()
-                    .pageTransition(pager, sp, s.anim)
-                    .background(c.bg),
-            ) {
+        val spreadView: @Composable (Int) -> Unit = { sp ->
+            Box(Modifier.fillMaxSize().background(c.bg)) {
                 Row(
                     Modifier.align(Alignment.TopCenter).padding(top = topPad),
                     horizontalArrangement = Arrangement.spacedBy(gutter),
@@ -484,7 +491,6 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
                         }
                     }
                 }
-                // footer: chapter + page number
                 val ch = book.chapters.lastOrNull { it.startBlock <= (list.getOrNull(sp * per)?.firstBlock ?: 0) }?.title.orEmpty()
                 Row(
                     Modifier.align(Alignment.BottomCenter).fillMaxWidth()
@@ -496,8 +502,36 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
                 }
             }
         }
+
+        if (s.anim == PageAnim.CURL) {
+            ctl.turn = { dir -> curlTurn(dir) }
+            CurlPager(
+                count = spreads, current = spread, onCurrentChange = { spread = it },
+                paper = lerpColor(c.bg, if (c.isDark) Color.White else Color.Black, 0.04f),
+                registerTurn = { curlTurn = it }, onTap = onTap, page = spreadView,
+            )
+        } else {
+            val pager = rememberPagerState(initialPage = spread) { spreads }
+            LaunchedEffect(pager) { snapshotFlow { pager.currentPage }.collect { spread = it } }
+            LaunchedEffect(spread) { if (pager.currentPage != spread && !pager.isScrollInProgress) pager.scrollToPage(spread) }
+            ctl.turn = { dir ->
+                scope.launch {
+                    val t = (pager.currentPage + dir).coerceIn(0, spreads - 1)
+                    if (anim.value == PageAnim.NONE) pager.scrollToPage(t) else pager.animateScrollToPage(t)
+                }
+            }
+            HorizontalPager(
+                state = pager,
+                modifier = Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures { onTap(it.x / w) } },
+                beyondViewportPageCount = 1,
+            ) { sp ->
+                Box(Modifier.fillMaxSize().pageTransition(pager, sp, s.anim)) { spreadView(sp) }
+            }
+        }
     }
 }
+
+private fun lerpColor(a: Color, b: Color, t: Float) = androidx.compose.ui.graphics.lerp(a, b, t)
 
 @Composable
 private fun PageView(page: Page, book: ParsedBook, specs: Map<Block.Kind, BlockSpec>) {
@@ -583,7 +617,7 @@ fun RoundIcon(onClick: () -> Unit, c: PageColors, label: String, icon: @Composab
 @Composable
 private fun BottomPanel(
     book: ParsedBook, ctl: ReaderController, c: PageColors, minutesLeft: Int,
-    onText: () -> Unit, onToc: () -> Unit, onToggleNight: () -> Unit,
+    onText: () -> Unit, onToc: () -> Unit, onToggleNight: () -> Unit, onAi: () -> Unit,
 ) {
     var dragging by remember { mutableStateOf(false) }
     var dragValue by remember { mutableFloatStateOf(0f) }
@@ -612,6 +646,7 @@ private fun BottomPanel(
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
             PanelButton("Текст", c, onText) { Icon(Icons.Rounded.TextFields, null) }
             PanelButton("Главы", c, onToc) { Icon(Icons.AutoMirrored.Rounded.FormatListBulleted, null) }
+            PanelButton("ИИ", c, onAi) { Icon(Icons.Rounded.AutoAwesome, null) }
             PanelButton(if (c.isDark) "Светлая" else "Ночь", c, onToggleNight) {
                 Icon(if (c.isDark) Icons.Rounded.LightMode else Icons.Rounded.DarkMode, null)
             }

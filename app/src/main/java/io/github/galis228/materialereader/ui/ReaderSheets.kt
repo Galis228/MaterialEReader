@@ -28,6 +28,10 @@ import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material3.BottomSheetDefaults
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.IconButton
@@ -69,96 +73,107 @@ import kotlin.math.roundToInt
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun TextSettingsSheet(s: ReaderSettings, onChange: (ReaderSettings) -> Unit, onDismiss: () -> Unit) {
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+    // Transparent scrim and a short sheet: the page stays visible above, so every change is seen right away
+    val maxH = (LocalConfiguration.current.screenHeightDp * 0.40f).dp
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        scrimColor = androidx.compose.ui.graphics.Color.Transparent,
+        dragHandle = { BottomSheetDefaults.DragHandle(Modifier.padding(top = 4.dp, bottom = 0.dp)) },
+    ) {
+        var tab by remember { mutableIntStateOf(0) }
+        PrimaryTabRow(selectedTabIndex = tab) {
+            Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Текст") })
+            Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Страница") })
+            Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("Управление") })
+        }
         Column(
-            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).navigationBarsPadding().padding(bottom = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
+            Modifier.fillMaxWidth().heightIn(max = maxH).verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp).navigationBarsPadding().padding(top = 12.dp, bottom = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text("Оформление", style = MaterialTheme.typography.titleLarge)
-
-            // Themes
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                for (t in ReaderTheme.entries) {
-                    val pc = pageColors(t, MaterialTheme.colorScheme)
-                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
-                        Box(
-                            Modifier.size(48.dp).clip(CircleShape).background(pc.bg)
-                                .border(BorderStroke(if (s.theme == t) 3.dp else 1.dp,
-                                    if (s.theme == t) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant), CircleShape)
-                                .clickable(role = Role.RadioButton) { onChange(s.copy(theme = t)) },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            if (s.theme == t) Icon(Icons.Rounded.Check, null, tint = pc.text)
-                            else Text("Аа", color = pc.text, fontSize = 14.sp)
+            when (tab) {
+                0 -> {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        for (t in ReaderTheme.entries) {
+                            val pc = pageColors(t, MaterialTheme.colorScheme)
+                            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                                Box(
+                                    Modifier.size(44.dp).clip(CircleShape).background(pc.bg)
+                                        .border(BorderStroke(if (s.theme == t) 3.dp else 1.dp,
+                                            if (s.theme == t) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant), CircleShape)
+                                        .clickable(role = Role.RadioButton) { onChange(s.copy(theme = t)) },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    if (s.theme == t) Icon(Icons.Rounded.Check, null, tint = pc.text)
+                                    else Text("Аа", color = pc.text, fontSize = 13.sp)
+                                }
+                                Text(t.label, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
                         }
-                        Spacer(Modifier.height(4.dp))
-                        Text(t.label, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Размер", Modifier.weight(1f))
+                        FilledTonalIconButton(onClick = { onChange(s.copy(fontSize = (s.fontSize - 1).coerceAtLeast(12f))) }) {
+                            Icon(Icons.Rounded.Remove, "Меньше")
+                        }
+                        Text("${s.fontSize.roundToInt()}", Modifier.width(40.dp), fontWeight = FontWeight.SemiBold,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        FilledTonalIconButton(onClick = { onChange(s.copy(fontSize = (s.fontSize + 1).coerceAtMost(36f))) }) {
+                            Icon(Icons.Rounded.Add, "Больше")
+                        }
+                    }
+                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                        ReaderFont.entries.forEachIndexed { i, f ->
+                            SegmentedButton(
+                                selected = s.font == f, onClick = { onChange(s.copy(font = f)) },
+                                shape = SegmentedButtonDefaults.itemShape(i, ReaderFont.entries.size),
+                            ) { Text(f.label, fontFamily = f.family(), maxLines = 1) }
+                        }
                     }
                 }
-            }
-
-            // Font size
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Размер шрифта", Modifier.weight(1f))
-                FilledTonalIconButton(onClick = { onChange(s.copy(fontSize = (s.fontSize - 1).coerceAtLeast(12f))) }) {
-                    Icon(Icons.Rounded.Remove, "Меньше")
-                }
-                Text("${s.fontSize.roundToInt()}", Modifier.width(40.dp), fontWeight = FontWeight.SemiBold,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                FilledTonalIconButton(onClick = { onChange(s.copy(fontSize = (s.fontSize + 1).coerceAtMost(36f))) }) {
-                    Icon(Icons.Rounded.Add, "Больше")
-                }
-            }
-
-            LabeledSlider("Межстрочный интервал", "%.2f".format(s.lineHeight), s.lineHeight, 1.1f..2.2f) {
-                onChange(s.copy(lineHeight = (it * 20).roundToInt() / 20f))
-            }
-            LabeledSlider("Поля", "${s.margin.roundToInt()} dp", s.margin, 8f..48f) {
-                onChange(s.copy(margin = it.roundToInt().toFloat()))
-            }
-
-            Text("Режим чтения", style = MaterialTheme.typography.titleSmall)
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                ReadMode.entries.forEachIndexed { i, m ->
-                    SegmentedButton(
-                        selected = s.mode == m, onClick = { onChange(s.copy(mode = m)) },
-                        shape = SegmentedButtonDefaults.itemShape(i, ReadMode.entries.size),
-                    ) { Text(m.label) }
-                }
-            }
-            if (s.mode == ReadMode.PAGES) {
-                Text("Анимация перелистывания", style = MaterialTheme.typography.titleSmall)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    PageAnim.entries.forEach { a ->
-                        FilterChip(selected = s.anim == a, onClick = { onChange(s.copy(anim = a)) }, label = { Text(a.label) })
+                1 -> {
+                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                        ReadMode.entries.forEachIndexed { i, m ->
+                            SegmentedButton(
+                                selected = s.mode == m, onClick = { onChange(s.copy(mode = m)) },
+                                shape = SegmentedButtonDefaults.itemShape(i, ReadMode.entries.size),
+                            ) { Text(m.label) }
+                        }
                     }
+                    if (s.mode == ReadMode.PAGES) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            PageAnim.entries.forEach { a ->
+                                FilterChip(selected = s.anim == a, onClick = { onChange(s.copy(anim = a)) }, label = { Text(a.label) })
+                            }
+                        }
+                    }
+                    LabeledSlider("Межстрочный интервал", s.lineHeight, 1.1f..2.2f, { "%.2f".format(it) }) {
+                        onChange(s.copy(lineHeight = (it * 20).roundToInt() / 20f))
+                    }
+                    LabeledSlider("Поля", s.margin, 8f..48f, { "${it.roundToInt()} dp" }) {
+                        onChange(s.copy(margin = it.roundToInt().toFloat()))
+                    }
+                    SwitchRow("Выравнивание по ширине", s.justify) { onChange(s.copy(justify = it)) }
+                    if (s.mode == ReadMode.PAGES) SwitchRow("Разворот в альбомной ориентации", s.twoPages) { onChange(s.copy(twoPages = it)) }
                 }
-                SwitchRow("Две страницы в альбомной ориентации", s.twoPages) { onChange(s.copy(twoPages = it)) }
-            }
-
-            Text("Шрифт", style = MaterialTheme.typography.titleSmall)
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                ReaderFont.entries.forEachIndexed { i, f ->
-                    SegmentedButton(
-                        selected = s.font == f, onClick = { onChange(s.copy(font = f)) },
-                        shape = SegmentedButtonDefaults.itemShape(i, ReaderFont.entries.size),
-                    ) { Text(f.label, fontFamily = f.family(), maxLines = 1) }
+                else -> {
+                    SwitchRow("Листать тапом по краям", s.tapToTurn) { onChange(s.copy(tapToTurn = it)) }
+                    SwitchRow("Листать кнопками громкости", s.volumeKeys) { onChange(s.copy(volumeKeys = it)) }
+                    SwitchRow("Не гасить экран", s.keepScreenOn) { onChange(s.copy(keepScreenOn = it)) }
                 }
             }
-
-            SwitchRow("Выравнивание по ширине", s.justify) { onChange(s.copy(justify = it)) }
-            SwitchRow("Листать тапом по краям", s.tapToTurn) { onChange(s.copy(tapToTurn = it)) }
-            SwitchRow("Листать кнопками громкости", s.volumeKeys) { onChange(s.copy(volumeKeys = it)) }
-            SwitchRow("Не гасить экран", s.keepScreenOn) { onChange(s.copy(keepScreenOn = it)) }
         }
     }
 }
 
+/** The value is applied when the finger lifts, so the book isn't re-laid out on every pixel of the drag. */
 @Composable
-private fun LabeledSlider(label: String, value: String, v: Float, range: ClosedFloatingPointRange<Float>, onChange: (Float) -> Unit) {
+private fun LabeledSlider(label: String, v: Float, range: ClosedFloatingPointRange<Float>, fmt: (Float) -> String, onCommit: (Float) -> Unit) {
+    var local by remember(v) { mutableFloatStateOf(v) }
     Column {
-        Row { Text(label, Modifier.weight(1f)); Text(value, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        Slider(value = v, onValueChange = onChange, valueRange = range)
+        Row { Text(label, Modifier.weight(1f)); Text(fmt(local), color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        Slider(value = local, onValueChange = { local = it }, onValueChangeFinished = { onCommit(local) }, valueRange = range)
     }
 }
 

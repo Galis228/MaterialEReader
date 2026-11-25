@@ -73,18 +73,19 @@ class Paginator(
         return measurer.measure(text, spec.forSlice(start), constraints = Constraints(maxWidth = w), skipCache = true)
     }
 
-    suspend fun paginate(book: ParsedBook, onProgress: (Float) -> Unit = {}): List<Page> {
+    suspend fun paginate(book: ParsedBook, from: Int = 0, to: Int = book.blocks.size, onProgress: (Float) -> Unit = {}): List<Page> {
         val pages = ArrayList<Page>()
         var cur = ArrayList<Slice>()
         var y = 0f
         val chapterStarts = book.chapters.map { it.startBlock }.toHashSet()
         fun push() { if (cur.isNotEmpty()) { pages += Page(cur); cur = ArrayList(); y = 0f } }
 
-        book.blocks.forEachIndexed { i, b ->
-            if (i % 50 == 0) { coroutineContext.ensureActive(); onProgress(i.toFloat() / book.blocks.size) }
+        for (i in from until to) {
+            val b = book.blocks[i]
+            if (i % 50 == 0) { coroutineContext.ensureActive(); onProgress((i - from).toFloat() / (to - from).coerceAtLeast(1)) }
             val spec = specs.getValue(b.kind)
             val text = if (b.kind == Block.Kind.SEPARATOR) "* * *" else b.text
-            if (i in chapterStarts && i > 0) push()
+            if (i in chapterStarts && i > from) push()
             var start = 0
             var guard = 0
             while (start < text.length && guard++ < 10_000) {
