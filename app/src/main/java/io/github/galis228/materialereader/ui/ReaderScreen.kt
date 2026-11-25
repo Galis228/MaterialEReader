@@ -585,9 +585,7 @@ private fun PageView(page: Page, book: ParsedBook, specs: Map<Block.Kind, BlockS
         page.slices.forEachIndexed { k, sl ->
             val b = book.blocks[sl.block]
             val full = if (b.kind == Block.Kind.SEPARATOR) "* * *" else b.text
-            var text = full.substring(sl.start, sl.end.coerceAtMost(full.length))
-            // a word split by hyphenation across pages keeps its hyphen
-            if (sl.end < full.length && sl.end > 0 && full[sl.end - 1].isLetter() && full[sl.end].isLetter()) text += "-"
+            val text = sliceText(full, sl.start, sl.end)
             SliceText(text, specs.getValue(b.kind), sl.start, first = k == 0, block = sl.block)
         }
     }

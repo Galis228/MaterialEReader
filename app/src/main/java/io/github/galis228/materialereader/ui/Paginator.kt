@@ -40,6 +40,9 @@ fun blockSpec(kind: Block.Kind, s: ReaderSettings, color: androidx.compose.ui.gr
         textAlign = if (s.justify) TextAlign.Justify else TextAlign.Start,
     )
     val dp = density.density
+    // Paddings are drawn as whole pixels, so measure them as whole pixels too
+    fun BlockSpec.whole() = copy(top = Math.round(top).toFloat(), bottom = Math.round(bottom).toFloat(),
+        padStart = Math.round(padStart).toFloat(), padEnd = Math.round(padEnd).toFloat())
     return when (kind) {
         Block.Kind.HEADING -> BlockSpec(
             base.copy(fontSize = (s.fontSize * 1.3f).sp, lineHeight = (s.fontSize * 1.6f).sp, fontWeight = FontWeight.SemiBold,
@@ -53,7 +56,7 @@ fun blockSpec(kind: Block.Kind, s: ReaderSettings, color: androidx.compose.ui.gr
             0f, 8 * dp, 64 * dp, 0f,
         )
         Block.Kind.SEPARATOR -> BlockSpec(base.copy(textAlign = TextAlign.Center, color = muted), 16 * dp, 16 * dp, 0f, 0f)
-    }
+    }.whole()
 }
 
 /** Style for a slice: continuation slices drop the first-line indent. */
@@ -96,7 +99,7 @@ class Paginator(
                 val lineH = if (layout.lineCount > 0) layout.getLineBottom(0) - layout.getLineTop(0) else 0f
                 // keep headings with at least two following lines
                 val need = if (b.kind == Block.Kind.HEADING) layout.size.height + lineH * 2 else layout.size.height.toFloat()
-                if (need <= avail) {
+                if (need <= avail - 1f) {
                     cur += Slice(i, start, text.length)
                     y += top + layout.size.height + spec.bottom
                     break
@@ -110,7 +113,14 @@ class Paginator(
                 // avoid a lonely first line at the bottom of a page
                 if ((fit == 0 || (fit == 1 && layout.lineCount > 2 && start == 0)) && cur.isNotEmpty()) { push(); continue }
                 if (fit == 0) fit = 1
-                val end = start + layout.getLineEnd(fit - 1)
+                // High-quality line breaking balances the whole paragraph, so a cut piece can wrap differently
+                // than the same lines inside the full paragraph. Measure the piece exactly as it will be drawn
+                // and give back lines until it really fits — otherwise the bottom line gets clipped.
+                var end = start + layout.getLineEnd(fit - 1)
+                while (fit > 1 && measure(sliceText(text, start, end), spec, start).size.height > avail - 1f) {
+                    fit--
+                    end = start + layout.getLineEnd(fit - 1)
+                }
                 cur += Slice(i, start, end)
                 push()
                 start = end
@@ -133,4 +143,12 @@ fun List<Page>.indexOfPosition(block: Int, char: Int): Int {
         if (p.firstBlock < block || (p.firstBlock == block && p.firstChar <= char)) lo = mid else hi = mid - 1
     }
     return lo
+}
+
+/** The text drawn for a slice: a word split across pages keeps its hyphen. Shared by measuring and drawing. */
+fun sliceText(full: String, start: Int, end: Int): String {
+    val e = end.coerceAtMost(full.length)
+    var t = full.substring(start.coerceAtMost(e), e)
+    if (e < full.length && e > 0 && full[e - 1].isLetter() && full[e].isLetter()) t += "-"
+    return t
 }
