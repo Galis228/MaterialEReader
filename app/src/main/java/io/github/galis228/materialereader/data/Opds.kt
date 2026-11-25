@@ -31,7 +31,24 @@ data class Acquisition(val url: String, val type: String) {
 data class OpdsEntry(
     val id: String, val title: String, val author: String, val summary: String,
     val coverUrl: String?, val navUrl: String?, val acquisitions: List<Acquisition>,
+    /** Heading on an author's page («Проза», «Стихотворения 1830»…); poetry sections are folded in the list. */
+    val section: String? = null,
 )
+
+/** Sections of an author page that list other people's writing about them. */
+fun isAboutSection(s: String?): Boolean {
+    val h = s?.lowercase() ?: return false
+    return listOf("критик", "библиограф", "бібліограф", "см. также", "див. також", "ссылк", "посилан", "литератур", "літератур",
+        "о нём", "о ней", "про нього", "про неї", "примечан", "примітк", "джерел", "источник", "see also", "about", "bibliograph",
+        "critic", "works about", "external", "sources", "памят", "пам'ят").any { it in h }
+}
+
+/** Section headings that hold short poems rather than books. */
+fun isPoetrySection(s: String?): Boolean {
+    val h = s?.lowercase() ?: return false
+    return listOf("стих", "вірш", "поэзи", "поезі", "лирик", "лірик", "poem", "poetry", "verse", "sonnet", "сонет", "песн", "пісн", "басн", "байк")
+        .any { it in h }
+}
 
 data class OpdsFeed(val url: String, val title: String, val entries: List<OpdsEntry>, val next: String?, val searchTemplate: String?)
 
@@ -40,13 +57,14 @@ object Opds {
 
     private val defaults = listOf(
         Catalog("Викитека — русская классика", "wikisource:ru", "wikisource:ru?q={searchTerms}"),
+        Catalog("Вікіджерела — українська класика", "wikisource:uk", "wikisource:uk?q={searchTerms}"),
         Catalog("Project Gutenberg", "https://www.gutenberg.org/ebooks.opds/",
             "https://www.gutenberg.org/ebooks/search.opds/?query={searchTerms}"),
         Catalog("Wikisource (English)", "https://ws-export.wmcloud.org/opds/en/Ready_for_export.xml", "wikisource:en?q={searchTerms}"),
     )
 
     /** Catalogs added in a later version show up for people who already have a saved list. */
-    private const val DEFAULTS_VERSION = 2
+    private const val DEFAULTS_VERSION = 3
 
     fun catalogs(ctx: Context): List<Catalog> {
         val p = ctx.getSharedPreferences("opds", 0)
@@ -67,18 +85,42 @@ object Opds {
         ctx.getSharedPreferences("opds", 0).edit().putString("catalogs", a.toString()).putInt("defaults_version", DEFAULTS_VERSION).apply()
     }
 
-    /** Classics that are free to read everywhere, as quick searches. */
-    val classics = listOf("Пушкин", "Лермонтов", "Гоголь", "Тургенев", "Достоевский", "Толстой", "Чехов", "Куприн", "Крылов", "Гончаров")
+    /** Classics that are free to read everywhere, as quick searches — matched to the catalog's language. */
+    private val russianClassics = listOf("Пушкин", "Лермонтов", "Гоголь", "Тургенев", "Достоевский", "Толстой", "Чехов", "Куприн", "Крылов", "Гончаров")
+    private val ukrainianClassics = listOf(
+        "Шевченко", "Франко", "Леся Українка", "Коцюбинський", "Нечуй-Левицький", "Марко Вовчок", "Панас Мирний",
+        "Котляревський", "Квітка-Основ'яненко", "Стефаник", "Кобилянська", "Грінченко", "Олесь", "Васильченко",
+    )
+    private val englishClassics = listOf(
+        "Shakespeare", "Jane Austen", "Charles Dickens", "Mark Twain", "Arthur Conan Doyle", "Oscar Wilde", "Robert Louis Stevenson",
+        "Charlotte Brontë", "Emily Brontë", "Jack London", "Edgar Allan Poe", "Herman Melville", "H. G. Wells", "Lewis Carroll",
+        "Rudyard Kipling", "Jules Verne", "Mary Shelley", "Bram Stoker",
+    )
+
+    fun classicsFor(c: Catalog?): List<String> = when {
+        c == null -> emptyList()
+        c.url.startsWith("wikisource:uk") -> ukrainianClassics
+        c.url.startsWith("wikisource:ru") -> russianClassics
+        c.url.contains("gutenberg") || c.url.contains("/opds/en/") || c.url.startsWith("wikisource:en") -> englishClassics
+        else -> emptyList()
+    }
 
     /**
      * Wikisource has no OPDS search, so "wikisource:<lang>?q=…" searches its works through the MediaWiki API
      * and offers each as an EPUB made by the official WS Export tool.
      */
+    private fun wsDownload(lang: String, t: String) =
+        listOf(Acquisition("https://ws-export.wmcloud.org/?format=epub&lang=$lang&page=${URLEncoder.encode(t.replace(' ', '_'), "UTF-8")}", "application/epub+zip"))
+
     private fun wikisource(url: String): OpdsFeed {
         val lang = url.removePrefix("wikisource:").substringBefore('?').ifEmpty { "ru" }
+        val title = when (lang) { "ru" -> "Викитека"; "uk" -> "Вікіджерела"; else -> "Wikisource" }
+        val template = "wikisource:$lang?q={searchTerms}"
+        val author = url.substringAfter("?author=", "").let { java.net.URLDecoder.decode(it, "UTF-8") }
+        if (author.isNotBlank()) return runCatching { wikisourceAuthor(lang, author, template) }.getOrNull()
+            ?: wikisource("wikisource:$lang?q=" + URLEncoder.encode(author, "UTF-8"))
         val q = url.substringAfter("?q=", "").let { java.net.URLDecoder.decode(it, "UTF-8") }
-        val title = if (lang == "ru") "Викитека" else "Wikisource"
-        if (q.isBlank()) return OpdsFeed(url, title, emptyList(), null, "wikisource:$lang?q={searchTerms}")
+        if (q.isBlank()) return OpdsFeed(url, title, emptyList(), null, template)
         val api = "https://$lang.wikisource.org/w/api.php?action=query&list=search&srnamespace=0&srlimit=40&format=json&srsearch=" +
             URLEncoder.encode(q, "UTF-8")
         val hits = JSONObject(String(get(api), Charsets.UTF_8)).optJSONObject("query")?.optJSONArray("search") ?: JSONArray()
@@ -86,15 +128,42 @@ object Opds {
             .map { it.getString("title") }
             .filter { '/' !in it } // whole works, not their chapters
             .distinct()
-            .map { t ->
-                val page = URLEncoder.encode(t.replace(' ', '_'), "UTF-8")
-                OpdsEntry(
-                    id = "ws:$lang:$t", title = t, author = "", summary = "",
-                    coverUrl = null, navUrl = null,
-                    acquisitions = listOf(Acquisition("https://ws-export.wmcloud.org/?format=epub&lang=$lang&page=$page", "application/epub+zip")),
-                )
-            }
-        return OpdsFeed(url, "$title: «$q»", entries, null, "wikisource:$lang?q={searchTerms}")
+            .map { t -> OpdsEntry("ws:$lang:$t", t, "", "", null, null, wsDownload(lang, t)) }
+        return OpdsFeed(url, "$title: «$q»", entries, null, template)
+    }
+
+    /**
+     * An author's works as listed on their Wikisource page, grouped by the page's own sections
+     * (prose and drama first, poems folded at the end).
+     */
+    private fun wikisourceAuthor(lang: String, name: String, template: String): OpdsFeed? {
+        val title = when (lang) { "ru" -> "Викитека"; "uk" -> "Вікіджерела"; else -> "Wikisource" }
+        // author pages live in namespace 102 ("Автор:", "Author:")
+        val find = "https://$lang.wikisource.org/w/api.php?action=query&list=search&srnamespace=102&srlimit=1&format=json&srsearch=" +
+            URLEncoder.encode(name, "UTF-8")
+        val page = JSONObject(String(get(find), Charsets.UTF_8)).optJSONObject("query")?.optJSONArray("search")
+            ?.optJSONObject(0)?.optString("title")?.takeIf { it.isNotEmpty() } ?: return null
+        val parse = "https://$lang.wikisource.org/w/api.php?action=parse&prop=text&format=json&formatversion=2&disableeditsection=1&page=" +
+            URLEncoder.encode(page, "UTF-8")
+        val html = JSONObject(String(get(parse), Charsets.UTF_8)).optJSONObject("parse")?.optString("text") ?: return null
+        val authorName = page.substringAfter(':')
+        val doc = Jsoup.parse(html)
+        val prose = ArrayList<OpdsEntry>(); val poems = ArrayList<OpdsEntry>()
+        val seen = HashSet<String>()
+        var section: String? = null
+        for (el in doc.select("h2, h3, h4, li a[href^=/wiki/]")) {
+            if (el.tagName().matches(Regex("h[234]"))) { section = el.text().trim().ifEmpty { section }; continue }
+            if (el.hasClass("new")) continue // red link: not transcribed yet
+            if (isAboutSection(section)) continue // criticism, bibliography, "see also" — not the author's works
+            val t = el.attr("title").ifEmpty { el.text() }.trim()
+            val ns = t.substringBefore(':', "")
+            if (t.isEmpty() || (ns.isNotEmpty() && ' ' !in ns && ns.length < 20)) continue // other namespaces: Автор:, Категория:, Файл:…
+            if ('/' in t || !seen.add(t)) continue
+            val e = OpdsEntry("ws:$lang:$t", t, authorName, "", null, null, wsDownload(lang, t), section)
+            if (isPoetrySection(section)) poems += e else prose += e
+        }
+        if (prose.isEmpty() && poems.isEmpty()) return null
+        return OpdsFeed("wikisource:$lang?author=$name", "$title: $authorName", prose + poems, null, template)
     }
 
     suspend fun load(url: String): OpdsFeed = withContext(Dispatchers.IO) {

@@ -68,6 +68,7 @@ import io.github.galis228.materialereader.data.Library
 import io.github.galis228.materialereader.data.Opds
 import io.github.galis228.materialereader.data.OpdsEntry
 import io.github.galis228.materialereader.data.OpdsFeed
+import io.github.galis228.materialereader.data.isPoetrySection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -92,6 +93,7 @@ fun CatalogScreen(onBack: () -> Unit, onOpenBook: (String) -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     var query by remember { mutableStateOf("") }
     var downloading by remember { mutableStateOf<String?>(null) }
+    var showPoems by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     val catalog = catalogs.getOrNull(catalogIndex)
@@ -146,12 +148,19 @@ fun CatalogScreen(onBack: () -> Unit, onOpenBook: (String) -> Unit) {
                 shape = RoundedCornerShape(28.dp),
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
             )
-            if (catalog?.url?.startsWith("wikisource:ru") == true || catalog?.url?.contains("gutenberg") == true) LazyRow(
+            val classics = remember(catalog) { Opds.classicsFor(catalog) }
+            if (classics.isNotEmpty()) LazyRow(
                 contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                items(Opds.classics.size) { i ->
-                    val name = Opds.classics[i]
-                    androidx.compose.material3.SuggestionChip(onClick = { query = name; search() }, label = { Text(name) })
+                items(classics.size) { i ->
+                    val name = classics[i]
+                    androidx.compose.material3.SuggestionChip(onClick = {
+                        query = name
+                        val c = catalog
+                        // on Wikisource a classic opens their author page: books first, poems folded
+                        if (c != null && c.url.startsWith("wikisource:")) open("${c.url.substringBefore('?')}?author=" + java.net.URLEncoder.encode(name, "UTF-8"))
+                        else search()
+                    }, label = { Text(name) })
                 }
             }
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -172,12 +181,25 @@ fun CatalogScreen(onBack: () -> Unit, onOpenBook: (String) -> Unit) {
             )
             LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
                 // feeds can repeat entries across pages, so keys must not depend on the entry alone
-                itemsIndexed(entries, key = { i, e -> "$i|${e.id}" }) { _, e ->
+                val prose = entries.filterNot { isPoetrySection(it.section) }
+                val poems = entries.filter { isPoetrySection(it.section) }
+                val shown = if (showPoems) prose + poems else prose
+                itemsIndexed(shown, key = { i, e -> "$i|${e.id}" }) { i, e ->
+                    val prev = shown.getOrNull(i - 1)
+                    if (e.section != null && e.section != prev?.section) Text(
+                        e.section, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 2.dp),
+                    )
                     EntryRow(
                         e, downloading == e.id,
                         onNavigate = { e.navUrl?.let { open(it) } },
                         onDownload = { a -> download(e, a, scope, library, snackbar, onOpenBook) { downloading = it } },
                     )
+                }
+                if (poems.isNotEmpty() && prose.isNotEmpty()) item {
+                    TextButton(onClick = { showPoems = !showPoems }, modifier = Modifier.padding(horizontal = 8.dp)) {
+                        Text(if (showPoems) "Скрыть стихотворения" else "Показать стихотворения (${poems.size})")
+                    }
                 }
                 feed?.next?.let { next ->
                     item {
@@ -214,7 +236,8 @@ private fun EntryRow(e: OpdsEntry, busy: Boolean, onNavigate: () -> Unit, onDown
         Modifier.fillMaxWidth().clickable(enabled = e.navUrl != null, onClick = onNavigate).padding(horizontal = 16.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        RemoteCover(e.coverUrl, Modifier.width(56.dp).height(82.dp))
+        if (e.coverUrl != null) RemoteCover(e.coverUrl, Modifier.width(56.dp).height(82.dp))
+        else LookupCover(e.title, e.author, Modifier.width(56.dp).height(82.dp))
         Column(Modifier.weight(1f)) {
             Text(e.title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
             if (e.author.isNotEmpty()) Text(e.author, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
@@ -249,4 +272,21 @@ private fun RemoteCover(url: String?, modifier: Modifier) {
     Box(modifier.clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh)) {
         img?.let { Image(it, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
     }
+}
+
+/** Remembered cover lookups (including "nothing found") so scrolling doesn't repeat requests. */
+private object LookupCache { val map = java.util.concurrent.ConcurrentHashMap<String, String>() }
+
+/** For catalogs without pictures (Wikisource): find a cover by title and author, or draw a title tile. */
+@Composable
+private fun LookupCover(title: String, author: String, modifier: Modifier) {
+    val key = "$title|$author"
+    val url by produceState(LookupCache.map[key], key) {
+        if (value != null) return@produceState
+        kotlinx.coroutines.delay(250) // only rows that stay on screen
+        value = (quickCover(title, author) ?: "").also { LookupCache.map[key] = it }
+    }
+    val u = url
+    if (!u.isNullOrEmpty()) RemoteImage(u, modifier)
+    else TitleTile(cleanTitle(title), author, modifier)
 }

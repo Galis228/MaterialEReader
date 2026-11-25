@@ -296,3 +296,34 @@ fun SharedCoverDialog(image: Uri, targetId: String?, onDone: () -> Unit) {
         confirmButton = { androidx.compose.material3.TextButton(onClick = onDone) { Text("Отмена") } },
     )
 }
+
+/** One likely cover for a catalog row: Open Library first, then the Wikipedia article's image. Null if none. */
+suspend fun quickCover(title: String, author: String): String? = withContext(Dispatchers.IO) {
+    fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
+    val t = cleanTitle(title)
+    // Wikisource titles carry the author in brackets: «Мцыри (Лермонтов)»
+    val a = surname(author).ifEmpty { Regex("\\(([^)]+)\\)").find(title)?.groupValues?.get(1)?.let(::surname).orEmpty() }
+    runCatching {
+        val docs = JSONObject(String(Opds.get("https://openlibrary.org/search.json?title=${enc(t)}" +
+            (if (a.isNotEmpty()) "&author=${enc(a)}" else "") + "&limit=5&fields=cover_i"), Charsets.UTF_8)).optJSONArray("docs")
+        (0 until (docs?.length() ?: 0)).firstNotNullOfOrNull { docs!!.getJSONObject(it).optLong("cover_i").takeIf { id -> id > 0 } }
+            ?.let { "https://covers.openlibrary.org/b/id/$it-M.jpg" }
+    }.getOrNull() ?: runCatching {
+        val lang = if (t.any { it in 'а'..'я' || it in 'А'..'Я' || it in "іїєґІЇЄҐ" }) (if (t.any { it in "іїєґІЇЄҐ" }) "uk" else "ru") else "en"
+        val pages = JSONObject(String(Opds.get("https://$lang.wikipedia.org/w/api.php?action=query&format=json&generator=search&gsrlimit=1" +
+            "&prop=pageimages&piprop=thumbnail&pithumbsize=300&gsrsearch=${enc("$t $a".trim())}"), Charsets.UTF_8))
+            .optJSONObject("query")?.optJSONObject("pages")
+        pages?.keys()?.asSequence()?.mapNotNull { pages.getJSONObject(it).optJSONObject("thumbnail")?.optString("source") }?.firstOrNull()
+    }.getOrNull()
+}
+
+/** A plain tile with the title, like the covers drawn on the shelf for books without one. */
+@Composable
+fun TitleTile(title: String, author: String, modifier: Modifier) {
+    val palette = listOf(0xFF264653, 0xFF3D4F8A, 0xFF7A3E5C, 0xFF2A9D8F, 0xFFB5651D, 0xFF5B6B3A)
+    val bg = androidx.compose.ui.graphics.Color(palette[(title.hashCode() and 0x7fffffff) % palette.size].toInt())
+    Box(modifier.clip(RoundedCornerShape(8.dp)).background(bg).padding(6.dp)) {
+        Text(title, color = androidx.compose.ui.graphics.Color.White, style = MaterialTheme.typography.labelSmall,
+            fontFamily = androidx.compose.ui.text.font.FontFamily.Serif, maxLines = 5, overflow = TextOverflow.Ellipsis)
+    }
+}
