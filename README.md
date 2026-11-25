@@ -19,7 +19,7 @@
 
 1. Поднять `versionCode` и `versionName` в `app/build.gradle.kts`.
 2. Описать изменения в `CHANGELOG-latest.md`.
-3. Создать тег и отправить его:
+3. Открыть вкладку Actions → Release → Run workflow (или отправить тег):
    ```
    git tag v0.2.1 && git push origin v0.2.1
    ```
