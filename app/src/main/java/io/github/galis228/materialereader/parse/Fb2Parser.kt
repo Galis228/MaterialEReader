@@ -38,11 +38,20 @@ object Fb2Parser {
         }?.let { runCatching { Base64.getMimeDecoder().decode(it.text()) }.getOrNull() }
 
         val blocks = ArrayList<Block>()
-        // Main body only (notes bodies have name="notes")
-        val bodies = doc.select("FictionBook > body").filter { it.attr("name").isEmpty() }
-            .ifEmpty { doc.select("body").take(1) }
+        // Main body only (notes bodies have name="notes"/"comments")
+        val allBodies = doc.select("FictionBook > body").ifEmpty { doc.select("body") }
+        val bodies = allBodies.filter { it.attr("name").isEmpty() }.ifEmpty { allBodies.take(1) }
         for (body in bodies) walk(body, blocks)
-        return ParsedBook(title, author, blocks, chaptersFromHeadings(blocks, title), cover)
+        // Footnotes: sections with an id inside the notes bodies
+        val notes = HashMap<String, String>()
+        for (b in allBodies.filter { it.attr("name").isNotEmpty() }) {
+            for (sec in b.select("section[id]")) {
+                val text = sec.children().filter { it.tagName() != "title" }.joinToString("\n") { it.text().normalizeSpace() }.trim()
+                    .ifEmpty { sec.text().normalizeSpace() }
+                if (text.isNotEmpty()) notes[sec.attr("id")] = cleanNote(text)
+            }
+        }
+        return ParsedBook(title, author, blocks, chaptersFromHeadings(blocks, title), cover, notes)
     }
 
     private fun walk(el: Element, out: MutableList<Block>) {
@@ -53,10 +62,8 @@ object Fb2Parser {
                         .ifEmpty { child.text().normalizeSpace() }
                     if (t.isNotEmpty()) out += Block(Block.Kind.HEADING, t)
                 }
-                "p", "subtitle" -> child.text().normalizeSpace().takeIf { it.isNotEmpty() }
-                    ?.let { out += Block(Block.Kind.PARAGRAPH, it) }
-                "v" -> child.text().normalizeSpace().takeIf { it.isNotEmpty() }
-                    ?.let { out += Block(Block.Kind.QUOTE, it) }
+                "p", "subtitle" -> paragraph(child, Block.Kind.PARAGRAPH)?.let { out += it }
+                "v" -> paragraph(child, Block.Kind.QUOTE)?.let { out += it }
                 "empty-line" -> {}
                 "epigraph" -> child.select("p, text-author").forEach { p ->
                     p.text().normalizeSpace().takeIf { it.isNotEmpty() }?.let { out += Block(Block.Kind.EPIGRAPH, it) }
@@ -70,6 +77,28 @@ object Fb2Parser {
             }
         }
     }
+
+    /** Paragraph text with footnote links: <a l:href="#n1" type="note">[1]</a>. */
+    private fun paragraph(el: Element, kind: Block.Kind): Block? {
+        val tb = TextBuilder()
+        fun walkInline(e: Element) {
+            for (n in e.childNodes()) when (n) {
+                is org.jsoup.nodes.TextNode -> tb.text(n.wholeText)
+                is Element -> {
+                    val href = n.attributes().asList().firstOrNull { it.key.endsWith("href") }?.value.orEmpty()
+                    if (n.tagName() == "a" && href.startsWith("#") && (n.attr("type") == "note" || n.text().trim().matches(NOTE_LABEL)))
+                        tb.ref(n.text(), href.removePrefix("#"))
+                    else walkInline(n)
+                }
+            }
+        }
+        walkInline(el)
+        if (tb.isEmpty()) return null
+        val (text, refs) = tb.build()
+        return Block(kind, text, refs)
+    }
+
+    private val NOTE_LABEL = Regex("^[\\[({]?\\*?\\d{0,3}\\*?[\\])}]?$")
 
     private fun decodeXml(bytes: ByteArray): String {
         val head = String(bytes, 0, minOf(200, bytes.size), Charsets.ISO_8859_1)

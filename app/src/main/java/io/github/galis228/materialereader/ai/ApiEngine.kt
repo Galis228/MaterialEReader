@@ -122,6 +122,34 @@ object ApiEngine {
         } finally { conn.disconnect() }
     }.flowOn(Dispatchers.IO)
 
+    /** Models the account can use, straight from the service (needs the key; LM Studio and similar need none). */
+    suspend fun listModels(cfg: ApiConfig): List<String> = kotlinx.coroutines.withContext(Dispatchers.IO) {
+        val base = cfg.baseUrl.trim().trimEnd('/')
+        val (url, headers) = when (cfg.provider) {
+            ApiProvider.OPENAI -> "$base/models" to mapOf("Authorization" to "Bearer ${cfg.key.trim()}")
+            ApiProvider.GEMINI -> "$base/models?pageSize=200" to mapOf("x-goog-api-key" to cfg.key.trim())
+            ApiProvider.CLAUDE -> "$base/models?limit=100" to mapOf("x-api-key" to cfg.key.trim(), "anthropic-version" to "2023-06-01")
+        }
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 15_000; readTimeout = 30_000
+            setRequestProperty("User-Agent", "MaterialEReader/${BuildConfig.VERSION_NAME}")
+            headers.forEach { (k, v) -> if (v.isNotBlank() && !v.endsWith(" ")) setRequestProperty(k, v) }
+        }
+        try {
+            val code = conn.responseCode
+            if (code !in 200..299) throw AiException(explain(code, runCatching { conn.errorStream?.bufferedReader()?.readText() }.getOrNull().orEmpty()))
+            val o = JSONObject(conn.inputStream.bufferedReader().readText())
+            when (cfg.provider) {
+                ApiProvider.GEMINI -> o.optJSONArray("models")?.let { a ->
+                    (0 until a.length()).map { a.getJSONObject(it) }
+                        .filter { m -> m.optJSONArray("supportedGenerationMethods")?.let { g -> (0 until g.length()).any { g.optString(it) == "generateContent" } } != false }
+                        .map { it.getString("name").removePrefix("models/") }
+                }.orEmpty()
+                else -> o.optJSONArray("data")?.let { a -> (0 until a.length()).map { a.getJSONObject(it).getString("id") } }.orEmpty()
+            }.distinct().sorted()
+        } finally { conn.disconnect() }
+    }
+
     private fun piece(p: ApiProvider, o: JSONObject): String? = when (p) {
         ApiProvider.OPENAI -> o.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("delta")?.optString("content")
         ApiProvider.GEMINI -> o.optJSONArray("candidates")?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts")

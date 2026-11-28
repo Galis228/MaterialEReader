@@ -71,7 +71,7 @@ class Paginator(
     private val width: Int,
     private val height: Int,
 ) {
-    private fun measure(text: String, spec: BlockSpec, start: Int): TextLayoutResult {
+    private fun measure(text: androidx.compose.ui.text.AnnotatedString, spec: BlockSpec, start: Int): TextLayoutResult {
         val w = (width - spec.padStart - spec.padEnd).toInt().coerceAtLeast(1)
         return measurer.measure(text, spec.forSlice(start), constraints = Constraints(maxWidth = w), skipCache = true)
     }
@@ -94,8 +94,7 @@ class Paginator(
             while (start < text.length && guard++ < 10_000) {
                 val top = spec.topOnPage(cur.isEmpty())
                 val avail = height - y - top
-                val sub = if (start == 0) text else text.substring(start)
-                val layout = measure(sub, spec, start)
+                val layout = measure(styledSlice(b, start, text.length), spec, start)
                 val lineH = if (layout.lineCount > 0) layout.getLineBottom(0) - layout.getLineTop(0) else 0f
                 // keep headings with at least two following lines
                 val need = if (b.kind == Block.Kind.HEADING) layout.size.height + lineH * 2 else layout.size.height.toFloat()
@@ -117,7 +116,7 @@ class Paginator(
                 // than the same lines inside the full paragraph. Measure the piece exactly as it will be drawn
                 // and give back lines until it really fits — otherwise the bottom line gets clipped.
                 var end = start + layout.getLineEnd(fit - 1)
-                while (fit > 1 && measure(sliceText(text, start, end), spec, start).size.height > avail - 1f) {
+                while (fit > 1 && measure(styledSlice(b, start, end), spec, start).size.height > avail - 1f) {
                     fit--
                     end = start + layout.getLineEnd(fit - 1)
                 }

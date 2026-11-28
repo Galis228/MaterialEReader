@@ -58,6 +58,7 @@ fun CurlPager(
     page: @Composable (Int) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
+    val tapAt = LocalTapAt.current
     var turn by remember { mutableStateOf<Turn?>(null) }
     val cur by rememberUpdatedState(current)
     val cnt by rememberUpdatedState(count)
@@ -113,7 +114,7 @@ fun CurlPager(
 
         Box(
             Modifier.fillMaxSize()
-                .pointerInput(Unit) { detectTapGestures(onLongPress = { onLongPress(it) }) { onTap(it.x / w) } }
+                .pointerInput(Unit) { detectTapGestures(onLongPress = { onLongPress(it) }) { if (!tapAt(it)) onTap(it.x / w) } }
                 .pointerInput(Unit) {
                     detectDragGestures(
                         onDragStart = { o ->

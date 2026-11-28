@@ -28,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.School
 import androidx.compose.material.icons.rounded.TravelExplore
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.AlertDialog
@@ -75,7 +76,7 @@ private const val WPM = 200
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun LibraryScreen(onOpen: (String) -> Unit, onCatalog: () -> Unit, onSettings: () -> Unit) {
+fun LibraryScreen(onOpen: (String) -> Unit, onCatalog: () -> Unit, onSettings: () -> Unit, onWords: () -> Unit = {}) {
     val ctx = LocalContext.current
     val library = remember { Library.get(ctx) }
     val books by library.books.collectAsState()
@@ -125,6 +126,12 @@ fun LibraryScreen(onOpen: (String) -> Unit, onCatalog: () -> Unit, onSettings: (
                 title = { Text("Библиотека") }, scrollBehavior = scroll,
                 actions = {
                     IconButton(onClick = onCatalog) { Icon(Icons.Rounded.TravelExplore, "Каталоги книг") }
+                    if (!simple) IconButton(onClick = onWords) {
+                        val due = io.github.galis228.materialereader.data.Words.get(ctx).all.collectAsState().value.count { it.due <= System.currentTimeMillis() }
+                        androidx.compose.material3.BadgedBox(badge = { if (due > 0) androidx.compose.material3.Badge { Text("$due") } }) {
+                            Icon(Icons.Rounded.School, "Слова")
+                        }
+                    }
                     IconButton(onClick = onSettings) { Icon(Icons.Rounded.Settings, "Настройки") }
                 },
             )

@@ -66,6 +66,7 @@ class MainActivity : ComponentActivity() {
                         LibraryScreen(
                             onOpen = { id -> nav.navigate("reader/$id") },
                             onCatalog = { nav.navigate("catalog") },
+                            onWords = { nav.navigate("words") },
                             onSettings = { nav.navigate("settings") },
                         )
                     }
@@ -79,6 +80,7 @@ class MainActivity : ComponentActivity() {
                         CatalogScreen(onBack = { nav.popBackStack() }, onOpenBook = { id -> nav.navigate("reader/$id") })
                     }
                     composable("settings") { AppSettingsScreen(onBack = { nav.popBackStack() }) }
+                    composable("words") { io.github.galis228.materialereader.ui.WordsScreen(onBack = { nav.popBackStack() }) }
                 }
                 update?.let { UpdateDialog(it) { update = null } }
                 var crash by remember { mutableStateOf(io.github.galis228.materialereader.data.CrashLog.pending(this@MainActivity)) }

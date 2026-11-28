@@ -75,67 +75,47 @@ fun highlightTint(color: Int, dark: Boolean): Color =
     HighlightColors.getOrElse(color) { HighlightColors[0] }.copy(alpha = if (dark) 0.22f else 0.34f)
 
 /** Where each paragraph is on screen right now, so a long press can tell which one was pressed. */
+/** A piece of text on screen: [rect] in root coordinates, [startChar] = where the piece begins in its paragraph. */
+class Hit(val block: Int, val rect: Rect, val layout: androidx.compose.ui.text.TextLayoutResult?, val startChar: Int) {
+    /** Character of the paragraph under [p], or null without a layout. */
+    fun charAt(p: Offset): Int? = layout?.let { l ->
+        (l.getOffsetForPosition(p - rect.topLeft) + startChar).coerceAtMost(startChar + l.layoutInput.text.length - 1).coerceAtLeast(startChar)
+    }
+
+    /** Screen box of paragraph characters [a, b) inside this piece, or null if not here. */
+    fun boxOf(a: Int, b: Int): Rect? {
+        val l = layout ?: return null
+        val n = l.layoutInput.text.length
+        val from = (a - startChar).coerceAtLeast(0); val to = (b - startChar).coerceAtMost(n)
+        if (from >= to) return null
+        var r = l.getBoundingBox(from)
+        for (i in from + 1 until to) {
+            val o = l.getBoundingBox(i)
+            r = Rect(minOf(r.left, o.left), minOf(r.top, o.top), maxOf(r.right, o.right), maxOf(r.bottom, o.bottom))
+        }
+        return r.translate(rect.topLeft)
+    }
+}
+
+/** Where each paragraph piece is on screen right now, so taps and long presses can tell what was pressed. */
 class BlockHits {
     // keyed by the on-screen text piece: one paragraph can be split across two composed pages
-    private val rects = HashMap<Any, Pair<Int, Rect>>()
-    fun put(token: Any, block: Int, r: Rect) { rects[token] = block to r }
-    fun remove(token: Any) { rects.remove(token) }
-    fun at(p: Offset): Int? = rects.values.firstOrNull { it.second.contains(p) }?.first
+    private val hits = HashMap<Any, Hit>()
+    fun put(token: Any, block: Int, r: Rect, layout: androidx.compose.ui.text.TextLayoutResult? = null, startChar: Int = 0) {
+        hits[token] = Hit(block, r, layout, startChar)
+    }
+    fun remove(token: Any) { hits.remove(token) }
+    fun hitAt(p: Offset): Hit? = hits.values.firstOrNull { it.rect.contains(p) }
+    fun at(p: Offset): Int? = hitAt(p)?.block
+    fun piecesOf(block: Int): List<Hit> = hits.values.filter { it.block == block }
 }
 
 val LocalBlockHits = staticCompositionLocalOf<BlockHits?> { null }
-val LocalHighlights = staticCompositionLocalOf<Map<Int, Highlight>> { emptyMap() }
+val LocalHighlights = staticCompositionLocalOf<Map<Int, List<Highlight>>> { emptyMap() }
 val LocalPageDark = staticCompositionLocalOf { false }
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun ParagraphSheet(
-    text: String, highlight: Highlight?, onSet: (color: Int, note: String) -> Unit,
-    onAskAi: () -> Unit, onDismiss: () -> Unit,
-) {
-    val ctx = LocalContext.current
-    var color by remember { mutableStateOf(highlight?.color ?: -1) }
-    var note by remember { mutableStateOf(highlight?.note.orEmpty()) }
-    fun commit() { if (color >= 0 || highlight != null) onSet(if (color < 0 && note.isNotBlank()) 0 else color, note.trim()) }
-
-    ModalBottomSheet(
-        onDismissRequest = { commit(); onDismiss() },
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        scrimColor = Color.Transparent,
-    ) {
-        Column(
-            Modifier.fillMaxWidth().padding(horizontal = 20.dp).navigationBarsPadding().padding(bottom = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Text(text, maxLines = 3, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                HighlightColors.forEachIndexed { i, c ->
-                    Box(
-                        Modifier.size(40.dp).clip(CircleShape).background(c)
-                            .border(if (color == i) 3.dp else 0.dp, MaterialTheme.colorScheme.onSurface, CircleShape)
-                            .clickable { color = if (color == i) -1 else i },
-                    )
-                }
-                if (highlight != null || color >= 0) TextButton(onClick = { color = -1; note = ""; onSet(-1, ""); onDismiss() }) {
-                    Icon(Icons.Rounded.Block, null); Text(" Снять")
-                }
-            }
-            OutlinedTextField(
-                note, { note = it; if (color < 0 && it.isNotBlank()) color = 0 },
-                placeholder = { Text("Заметка к абзацу") }, modifier = Modifier.fillMaxWidth(), maxLines = 4,
-                leadingIcon = { Icon(Icons.AutoMirrored.Rounded.Notes, null) },
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { copy(ctx, text); commit(); onDismiss() }) { Icon(Icons.Rounded.ContentCopy, null, Modifier.size(18.dp)); Text(" Копировать") }
-                OutlinedButton(onClick = { share(ctx, text); commit(); onDismiss() }) { Icon(Icons.Rounded.Share, null, Modifier.size(18.dp)); Text(" Поделиться") }
-            }
-            FilledTonalButton(onClick = { commit(); onAskAi() }, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Rounded.AutoAwesome, null, Modifier.size(18.dp)); Text(" Спросить ИИ про этот абзац")
-            }
-        }
-    }
-}
+val LocalPageAccent = staticCompositionLocalOf { Color.Unspecified }
+/** Taps go here first (footnote marks); true = handled, so the tap doesn't turn the page. */
+val LocalTapAt = staticCompositionLocalOf<(Offset) -> Boolean> { { false } }
 
 fun copy(ctx: Context, text: String) {
     ctx.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("Цитата", text))
@@ -155,7 +135,7 @@ fun quotesMarkdown(book: ParsedBook, highlights: List<Highlight>): String = buil
     for (h in highlights.sortedBy { it.block }) {
         val ch = book.chapters.lastOrNull { it.startBlock <= h.block }?.title.orEmpty()
         if (ch != lastChapter) { append("\n## ").append(ch).append("\n\n"); lastChapter = ch }
-        append("> ").append(book.blocks.getOrNull(h.block)?.text.orEmpty().replace("\n", "\n> ")).append('\n')
+        append("> ").append(h.text(book.blocks.getOrNull(h.block)?.text.orEmpty()).replace("\n", "\n> ")).append('\n')
         if (h.note.isNotBlank()) append("\n").append(h.note).append('\n')
         append('\n')
     }
@@ -242,12 +222,12 @@ fun QuotesTab(book: ParsedBook, highlights: List<Highlight>, onPick: (Highlight)
             }
         }
         LazyColumn {
-            items(highlights.sortedBy { it.block }, key = { it.block }) { h ->
+            items(highlights.sortedWith(compareBy({ it.block }, { it.start })), key = { it.createdAt }) { h ->
                 Row(Modifier.fillMaxWidth().clickable { onPick(h) }.padding(horizontal = 20.dp, vertical = 10.dp)) {
                     Box(Modifier.padding(top = 4.dp).size(10.dp).clip(CircleShape).background(HighlightColors.getOrElse(h.color) { HighlightColors[0] }))
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(book.blocks.getOrNull(h.block)?.text.orEmpty(), maxLines = 3, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+                        Text(h.text(book.blocks.getOrNull(h.block)?.text.orEmpty()), maxLines = 3, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
                         if (h.note.isNotBlank()) Text(h.note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.padding(top = 4.dp))
                     }

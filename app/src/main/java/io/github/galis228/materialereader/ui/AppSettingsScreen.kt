@@ -67,6 +67,7 @@ import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.layout.size
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import io.github.galis228.materialereader.ai.EngineChoice
@@ -172,6 +173,23 @@ fun AppSettingsScreen(onBack: () -> Unit) {
             item { TextButton(onClick = { addCatalog = true }, modifier = Modifier.padding(horizontal = 8.dp)) { Icon(Icons.Rounded.Add, null); Text(" Добавить каталог") } }
             item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
 
+            item { Section("Перевод") }
+            item {
+                var target by remember { mutableStateOf(io.github.galis228.materialereader.data.Translate.target(ctx)) }
+                Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Переводить на", style = MaterialTheme.typography.bodyMedium)
+                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                        val opts = io.github.galis228.materialereader.data.Translate.targets
+                        opts.forEachIndexed { i, (code, label) ->
+                            SegmentedButton(selected = target == code, onClick = { target = code; io.github.galis228.materialereader.data.Translate.setTarget(ctx, code) },
+                                shape = SegmentedButtonDefaults.itemShape(i, opts.size)) { Text(label, maxLines = 1) }
+                        }
+                    }
+                    Text("Перевод работает на телефоне без интернета. Языковой пакет (около 30 МБ) скачивается один раз при первом переводе. Если слово уже на этом языке — переводится на английский.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
             item { Section("ИИ-помощник") }
             item { AiSettingsBlock() }
             item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
@@ -357,8 +375,7 @@ private fun ApiBlock(ai: Ai) {
                 supportingText = if (provider == ApiProvider.OPENAI) {
                     { Text("OpenRouter: https://openrouter.ai/api/v1 · DeepSeek: https://api.deepseek.com/v1 · LM Studio: http://IP:1234/v1") }
                 } else null)
-            OutlinedTextField(model, { model = it; save() }, label = { Text("Модель") }, placeholder = { Text(provider.modelHint) },
-                singleLine = true, modifier = Modifier.fillMaxWidth())
+            ModelPicker(ai, provider, url, key, model) { model = it; save() }
             OutlinedTextField(
                 key, { key = it; save() }, label = { Text("Ключ API") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                 visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
@@ -378,6 +395,59 @@ private fun ApiBlock(ai: Ai) {
                     }
                 }) { Text(if (testing) "Проверяю…" else "Проверить") }
                 test?.let { Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 12.dp)) }
+            }
+        }
+    }
+}
+
+/** Model field with a drop-down of the models the service actually offers for this key. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ModelPicker(ai: Ai, provider: ApiProvider, url: String, key: String, model: String, onPick: (String) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    var models by remember { mutableStateOf<List<String>>(emptyList()) }
+    var loading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    // reload when the service, address or key changes (after a short pause while typing)
+    LaunchedEffect(provider, url, key) {
+        models = emptyList(); error = null
+        if (url.isBlank()) return@LaunchedEffect
+        kotlinx.coroutines.delay(600)
+        loading = true
+        runCatching { ApiEngine.listModels(io.github.galis228.materialereader.ai.ApiConfig(provider, url, model, key)) }
+            .onSuccess { models = it; if (it.isEmpty()) error = "Сервис не вернул список моделей — впиши название вручную" }
+            .onFailure { error = if (key.isBlank()) "Укажи ключ, чтобы загрузить список моделей" else "Список моделей не загрузился: ${it.message}" }
+        loading = false
+    }
+    val filtered = remember(models, model) {
+        val q = model.trim().lowercase()
+        if (q.isEmpty() || models.any { it.equals(q, true) }) models else models.filter { q in it.lowercase() }.ifEmpty { models }
+    }
+    androidx.compose.material3.ExposedDropdownMenuBox(expanded = expanded && filtered.isNotEmpty(), onExpandedChange = { expanded = it }) {
+        OutlinedTextField(
+            value = model, onValueChange = { onPick(it); expanded = true }, singleLine = true,
+            label = { Text("Модель") }, placeholder = { Text(provider.modelHint) },
+            supportingText = {
+                Text(when {
+                    loading -> "Загружаю список моделей…"
+                    error != null -> error!!
+                    models.isNotEmpty() -> "Доступно моделей: ${models.size} — выбери из списка или начни вводить"
+                    else -> ""
+                })
+            },
+            trailingIcon = {
+                if (loading) androidx.compose.material3.CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                else androidx.compose.material3.ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
+            },
+            modifier = Modifier.fillMaxWidth().menuAnchor(androidx.compose.material3.ExposedDropdownMenuAnchorType.PrimaryEditable),
+        )
+        ExposedDropdownMenu(expanded = expanded && filtered.isNotEmpty(), onDismissRequest = { expanded = false }) {
+            filtered.take(200).forEach { m ->
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Text(m, maxLines = 1) },
+                    onClick = { onPick(m); expanded = false },
+                    contentPadding = androidx.compose.material3.ExposedDropdownMenuDefaults.ItemContentPadding,
+                )
             }
         }
     }

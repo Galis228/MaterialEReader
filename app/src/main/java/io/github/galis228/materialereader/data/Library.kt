@@ -26,8 +26,14 @@ import java.util.UUID
 
 data class Bookmark(val block: Int, val charPos: Int, val snippet: String, val chapter: String, val createdAt: Long)
 
-/** A highlighted paragraph with an optional note. color = index in [HighlightColors]. */
-data class Highlight(val block: Int, val color: Int, val note: String, val createdAt: Long)
+/**
+ * A highlight with an optional note. color = index in HighlightColors.
+ * start/end are characters of the paragraph; -1 means the whole paragraph (highlights from 0.4–0.5).
+ */
+data class Highlight(val block: Int, val color: Int, val note: String, val createdAt: Long, val start: Int = -1, val end: Int = -1) {
+    val whole get() = start < 0
+    fun text(blockText: String) = if (whole) blockText else blockText.substring(start.coerceIn(0, blockText.length), end.coerceIn(0, blockText.length))
+}
 
 data class BookEntry(
     val id: String,
@@ -154,12 +160,12 @@ class Library private constructor(private val ctx: Context) {
     suspend fun addBookmark(id: String, b: Bookmark) = editBook(id) { it.copy(bookmarks = (it.bookmarks + b).sortedBy { m -> m.block * 1_000_000L + m.charPos }) }
     suspend fun removeBookmark(id: String, createdAt: Long) = editBook(id) { it.copy(bookmarks = it.bookmarks.filterNot { m -> m.createdAt == createdAt }) }
 
-    /** Adds, recolors or re-notes the highlight of a paragraph; color < 0 removes it. */
-    suspend fun setHighlight(id: String, block: Int, color: Int, note: String) = editBook(id) { e ->
-        val rest = e.highlights.filterNot { it.block == block }
-        val old = e.highlights.firstOrNull { it.block == block }
-        e.copy(highlights = if (color < 0) rest else (rest + Highlight(block, color, note, old?.createdAt ?: System.currentTimeMillis())).sortedBy { it.block })
+    /** Adds a highlight, or replaces the one with the same createdAt. */
+    suspend fun putHighlight(id: String, h: Highlight) = editBook(id) { e ->
+        e.copy(highlights = (e.highlights.filterNot { it.createdAt == h.createdAt } + h).sortedWith(compareBy({ it.block }, { it.start })))
     }
+
+    suspend fun removeHighlight(id: String, createdAt: Long) = editBook(id) { e -> e.copy(highlights = e.highlights.filterNot { it.createdAt == createdAt }) }
 
     suspend fun setReadMark(id: String, mark: Int) = editBook(id) { it.copy(readMark = mark) }
 
@@ -290,7 +296,7 @@ class Library private constructor(private val ctx: Context) {
             b.sourceUri?.let { put("source", it) }
             put("readMark", b.readMark); put("coverRev", b.coverRev)
             put("highlights", JSONArray().apply {
-                b.highlights.forEach { h -> put(JSONObject().put("block", h.block).put("color", h.color).put("note", h.note).put("created", h.createdAt)) }
+                b.highlights.forEach { h -> put(JSONObject().put("block", h.block).put("color", h.color).put("note", h.note).put("created", h.createdAt).put("start", h.start).put("end", h.end)) }
             })
             put("bookmarks", JSONArray().apply {
                 b.bookmarks.forEach { m ->
@@ -324,7 +330,7 @@ class Library private constructor(private val ctx: Context) {
                     },
                     if (hl == null) emptyList() else (0 until hl.length()).map { j ->
                         val h = hl.getJSONObject(j)
-                        Highlight(h.getInt("block"), h.optInt("color"), h.optString("note"), h.optLong("created"))
+                        Highlight(h.getInt("block"), h.optInt("color"), h.optString("note"), h.optLong("created"), h.optInt("start", -1), h.optInt("end", -1))
                     },
                     o.optInt("readMark"), o.optLong("coverRev"),
                 )

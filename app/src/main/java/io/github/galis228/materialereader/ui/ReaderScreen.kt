@@ -50,6 +50,7 @@ import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.TextFields
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.foundation.layout.width
@@ -268,9 +269,32 @@ private fun BookReader(
 
     val hits = remember { BlockHits() }
     val highlights = books.firstOrNull { it.id == id }?.highlights.orEmpty()
-    val hlMap = remember(highlights) { highlights.associateBy { it.block } }
+    val hlMap = remember(highlights) { highlights.groupBy { it.block } }
+    // Long press on a word: select it (the selection can be stretched in the sheet)
+    var selection by remember { mutableStateOf<IntRange?>(null) }
     val onLongPress: (Offset) -> Unit = { p ->
-        if (!settings.simpleMode) hits.at(p)?.let { paragraph = it; uiVisible = false; sheet = Sheet.PARAGRAPH }
+        if (!settings.simpleMode) hits.hitAt(p)?.let { h ->
+            val text = book.blocks.getOrNull(h.block)?.text.orEmpty()
+            paragraph = h.block
+            selection = h.charAt(p)?.let { wordAt(text, it) } ?: text.indices
+            uiVisible = false; sheet = Sheet.SELECT
+        }
+    }
+
+    // Tap on a footnote mark: show the note instead of turning the page
+    var footnote by remember { mutableStateOf<Footnote?>(null) }
+    var returnTo by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    val slop = with(LocalDensity.current) { 14.dp.toPx() }
+    val tapAt: (Offset) -> Boolean = tap@{ p ->
+        if (uiVisible || sheet != null) return@tap false
+        val h = hits.hitAt(p) ?: return@tap false
+        val blk = book.blocks.getOrNull(h.block) ?: return@tap false
+        val ref = blk.allRefs.firstOrNull { r ->
+            h.boxOf(r.start, r.end)?.let { b -> androidx.compose.ui.geometry.Rect(b.left - slop, b.top - slop, b.right + slop, b.bottom + slop).contains(p) } == true
+        } ?: return@tap false
+        footnote = findFootnote(book, h.block, ref)
+        sheet = Sheet.NOTE
+        true
     }
 
     // Reader brightness (null = follow the system)
@@ -287,13 +311,28 @@ private fun BookReader(
     }
 
     Box(Modifier.fillMaxSize().background(colors.bg)) {
-        CompositionLocalProvider(LocalBlockHits provides hits, LocalHighlights provides hlMap, LocalPageDark provides colors.isDark) {
+        CompositionLocalProvider(LocalBlockHits provides hits, LocalHighlights provides hlMap, LocalPageDark provides colors.isDark,
+            LocalPageAccent provides colors.accent, LocalTapAt provides tapAt) {
             when (settings.mode) {
                 ReadMode.SCROLL -> ScrollContent(book, settings, colors, ctl, startOffset, onTap, onLongPress) { scrollOffset = it }
                 ReadMode.PAGES -> PagedContent(book, settings, colors, ctl, onTap, onLongPress)
             }
         }
         if (settings.warmth > 0.01f) Box(Modifier.fillMaxSize().background(Color(0xFFFF8F00).copy(alpha = settings.warmth * 0.28f)))
+        returnTo?.let { (rb, rc) ->
+            androidx.compose.material3.Surface(
+                onClick = { returnTo = null; ctl.jumpTo(rb, rc) },
+                shape = RoundedCornerShape(24.dp), color = colors.panel, contentColor = colors.text, shadowElevation = 6.dp,
+                modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 36.dp),
+            ) {
+                Row(Modifier.padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("↩ Вернуться к чтению", fontSize = 14.sp)
+                    IconButton(onClick = { returnTo = null }, modifier = Modifier.size(32.dp)) {
+                        Icon(androidx.compose.material.icons.Icons.Rounded.Clear, "Остаться здесь", Modifier.size(18.dp))
+                    }
+                }
+            }
+        }
 
         if (!uiVisible && settings.mode == ReadMode.SCROLL) {
             val p = if (ctl.sliderMax <= 0f) 1f else (ctl.sliderValue / ctl.sliderMax).coerceIn(0f, 1f)
@@ -346,11 +385,16 @@ private fun BookReader(
         Sheet.SEARCH -> SearchSheet(book, searchQuery, onQuery = { searchQuery = it }, onPick = { h ->
             sheet = null; ctl.jumpTo(h.block, h.char)
         }) { sheet = null }
-        Sheet.PARAGRAPH -> ParagraphSheet(
-            text = book.blocks.getOrNull(paragraph)?.text.orEmpty(), highlight = hlMap[paragraph],
-            onSet = { color, note -> scope.launch { library.setHighlight(id, paragraph, color, note) } },
-            onAskAi = { aiPreset = book.blocks.getOrNull(paragraph)?.text; sheet = Sheet.AI },
-        ) { if (sheet == Sheet.PARAGRAPH) sheet = null }
+        Sheet.SELECT -> SelectionSheet(
+            blockText = book.blocks.getOrNull(paragraph)?.text.orEmpty(), blockIndex = paragraph,
+            initial = selection ?: 0..0, bookTitle = book.title, highlights = hlMap[paragraph].orEmpty(),
+            onPut = { h -> scope.launch { library.putHighlight(id, h) } },
+            onRemove = { c -> scope.launch { library.removeHighlight(id, c) } },
+            onAskAi = { text -> aiPreset = text; sheet = Sheet.AI },
+        ) { if (sheet == Sheet.SELECT) sheet = null }
+        Sheet.NOTE -> footnote?.let { n ->
+            FootnoteSheet(n, onGo = { b -> returnTo = ctl.block to ctl.char; sheet = null; ctl.jumpTo(b, 0) }) { sheet = null }
+        }
         Sheet.AI -> AiSheet(
             book, ctl.block, book.chapters.getOrNull(chapterIndex)?.startBlock ?: 0,
             pageText = { aiPreset ?: ctl.visibleText() }, preset = aiPreset,
@@ -360,7 +404,7 @@ private fun BookReader(
     }
 }
 
-private enum class Sheet { TEXT, TOC, AI, SEARCH, PARAGRAPH }
+private enum class Sheet { TEXT, TOC, AI, SEARCH, SELECT, NOTE }
 
 @Composable
 fun SystemBars(visible: Boolean, dark: Boolean, keepScreenOn: Boolean) {
@@ -394,6 +438,7 @@ private fun ScrollContent(
     onTap: (Float) -> Unit, onLongPress: (Offset) -> Unit, onOffset: (Int) -> Unit,
 ) {
     val list: LazyListState = rememberLazyListState(ctl.block, startOffset)
+    val tapAt = LocalTapAt.current
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
     val total = (book.blocks.size - 1).coerceAtLeast(1)
@@ -423,7 +468,7 @@ private fun ScrollContent(
         val w = constraints.maxWidth.toFloat()
         LazyColumn(
             state = list,
-            modifier = Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onLongPress = { onLongPress(it) }) { onTap(it.x / w) } },
+            modifier = Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onLongPress = { onLongPress(it) }) { if (!tapAt(it)) onTap(it.x / w) } },
             contentPadding = PaddingValues(
                 start = s.margin.dp, end = s.margin.dp,
                 top = bars.calculateTopPadding() + 28.dp, bottom = bars.calculateBottomPadding() + 120.dp,
@@ -431,7 +476,7 @@ private fun ScrollContent(
         ) {
             itemsIndexed(book.blocks, contentType = { _, b -> b.kind }) { i, b ->
                 val spec = specs.getValue(b.kind)
-                SliceText(if (b.kind == Block.Kind.SEPARATOR) "* * *" else b.text, spec, 0, first = i == 0, block = i)
+                SliceText(b, i, spec, first = i == 0)
             }
         }
     }
@@ -446,22 +491,25 @@ private fun rememberSpecs(s: ReaderSettings, c: PageColors): Map<Block.Kind, Blo
 }
 
 @Composable
-private fun SliceText(text: String, spec: BlockSpec, start: Int, first: Boolean, block: Int) {
+private fun SliceText(block: Block, index: Int, spec: BlockSpec, first: Boolean) {
     val d = LocalDensity.current
     val hits = LocalBlockHits.current
-    val hl = LocalHighlights.current[block]
+    val hls = LocalHighlights.current[index].orEmpty()
     val dark = LocalPageDark.current
+    val accent = LocalPageAccent.current
     val token = remember { Any() }
+    var layout by remember { mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null) }
     if (hits != null) DisposableEffect(token) { onDispose { hits.remove(token) } }
+    val text = remember(block, hls, accent, dark) { styledSlice(block, 0, block.text.length, accent, hls, dark) }
     with(d) {
         Text(
-            text, style = spec.forSlice(start),
+            text, style = spec.forSlice(0), onTextLayout = { layout = it },
             modifier = Modifier.fillMaxWidth()
-                .then(if (hits != null) Modifier.onGloballyPositioned { hits.put(token, block, it.boundsInRoot()) } else Modifier)
                 .padding(
-                top = spec.topOnPage(first).toDp(), bottom = spec.bottom.toDp(),
-                start = spec.padStart.toDp(), end = spec.padEnd.toDp(),
-            ).then(if (hl != null) Modifier.background(highlightTint(hl.color, dark), RoundedCornerShape(4.dp)) else Modifier),
+                    top = spec.topOnPage(first).toDp(), bottom = spec.bottom.toDp(),
+                    start = spec.padStart.toDp(), end = spec.padEnd.toDp(),
+                )
+                .then(if (hits != null) Modifier.onGloballyPositioned { hits.put(token, index, it.boundsInRoot(), layout, 0) } else Modifier),
         )
     }
 }
@@ -483,6 +531,7 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
     val layoutDir = LocalLayoutDirection.current
     val bars = WindowInsets.systemBarsIgnoringVisibility.asPaddingValues()
     val specs = rememberSpecs(s, c)
+    val tapAt = LocalTapAt.current
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val landscape = maxWidth > maxHeight
@@ -603,7 +652,7 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
             }
             HorizontalPager(
                 state = pager,
-                modifier = Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onLongPress = { onLongPress(it) }) { onTap(it.x / w) } },
+                modifier = Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onLongPress = { onLongPress(it) }) { if (!tapAt(it)) onTap(it.x / w) } },
                 beyondViewportPageCount = 1,
             ) { sp ->
                 Box(Modifier.fillMaxSize().pageTransition(pager, sp, s.anim)) { spreadView(sp) }
@@ -624,20 +673,20 @@ private fun PageView(page: Page, book: ParsedBook, specs: Map<Block.Kind, BlockS
     val hits = LocalBlockHits.current
     val highlights = LocalHighlights.current
     val dark = LocalPageDark.current
+    val accent = LocalPageAccent.current
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val width = constraints.maxWidth
-        val placed = remember(page, specs, width, measurer) {
+        val placed = remember(page, specs, width, measurer, highlights, accent, dark) {
             var y = 0f
             page.slices.mapIndexed { k, sl ->
                 val b = book.blocks[sl.block]
                 val spec = specs.getValue(b.kind)
-                val full = if (b.kind == Block.Kind.SEPARATOR) "* * *" else b.text
                 val w = (width - spec.padStart - spec.padEnd).toInt().coerceAtLeast(1)
-                val layout = measurer.measure(sliceText(full, sl.start, sl.end), spec.forSlice(sl.start),
-                    constraints = Constraints(maxWidth = w), skipCache = true)
+                val layout = measurer.measure(styledSlice(b, sl.start, sl.end, accent, highlights[sl.block].orEmpty(), dark),
+                    spec.forSlice(sl.start), constraints = Constraints(maxWidth = w), skipCache = true)
                 val top = y + spec.topOnPage(k == 0)
                 y = top + layout.size.height + spec.bottom
-                PlacedSlice(sl.block, layout, Offset(spec.padStart, top), w)
+                PlacedSlice(sl.block, layout, Offset(spec.padStart, top), w, sl.start)
             }
         }
         var origin by remember { mutableStateOf(Offset.Zero) }
@@ -647,7 +696,7 @@ private fun PageView(page: Page, book: ParsedBook, specs: Map<Block.Kind, BlockS
             LaunchedEffect(origin, placed) {
                 placed.forEachIndexed { i, p ->
                     hits.put(tokens[i], p.block, androidx.compose.ui.geometry.Rect(origin + p.at,
-                        androidx.compose.ui.geometry.Size(p.width.toFloat(), p.layout.size.height.toFloat())))
+                        androidx.compose.ui.geometry.Size(p.width.toFloat(), p.layout.size.height.toFloat())), p.layout, p.startChar)
                 }
             }
         }
@@ -656,19 +705,12 @@ private fun PageView(page: Page, book: ParsedBook, specs: Map<Block.Kind, BlockS
                 .onGloballyPositioned { origin = it.positionInRoot() }
                 .semantics { contentDescription = placed.joinToString("\n") { it.layout.layoutInput.text.text } },
         ) {
-            for (p in placed) {
-                highlights[p.block]?.let { h ->
-                    drawRoundRect(highlightTint(h.color, dark), topLeft = p.at,
-                        size = androidx.compose.ui.geometry.Size(p.width.toFloat(), p.layout.size.height.toFloat()),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(4.dp.toPx()))
-                }
-                drawText(p.layout, topLeft = p.at)
-            }
+            for (p in placed) drawText(p.layout, topLeft = p.at)
         }
     }
 }
 
-private class PlacedSlice(val block: Int, val layout: androidx.compose.ui.text.TextLayoutResult, val at: Offset, val width: Int)
+private class PlacedSlice(val block: Int, val layout: androidx.compose.ui.text.TextLayoutResult, val at: Offset, val width: Int, val startChar: Int)
 
 /** Page-turn effects. Pages with a higher index are drawn on top, so effects animate the incoming page. */
 private fun Modifier.pageTransition(pager: PagerState, page: Int, anim: PageAnim): Modifier = this

@@ -24,8 +24,8 @@ android {
         applicationId = "io.github.galis228.materialereader"
         minSdk = 26
         targetSdk = 36
-        versionCode = 10
-        versionName = "0.5.4"
+        versionCode = 11
+        versionName = "0.6.0"
         buildConfigField("String", "UPDATE_REPO", "\"$updateRepo\"")
         ndk { abiFilters += "arm64-v8a" }
     }
@@ -90,6 +90,10 @@ dependencies {
     // ИИ, как в НаноПеро: Gemini Nano (AICore) и модели .litertlm (Gemma 4, Qwen 3); GGUF — через libnanollama.so
     implementation("com.google.mlkit:genai-prompt:1.0.0-beta5")
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.19.1")
+    // Перевод офлайн на телефоне (языковые пакеты скачиваются один раз) и определение языка
+    implementation("com.google.mlkit:translate:17.0.3")
+    implementation("com.google.mlkit:language-id:17.0.6")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20250517")
