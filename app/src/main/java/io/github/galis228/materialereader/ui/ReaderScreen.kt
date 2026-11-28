@@ -389,6 +389,7 @@ private fun BookReader(
     fun openFootnote(block: Int, ref: NoteRef): Boolean {
         val text = book.blocks.getOrNull(block)?.text.orEmpty()
         footnote = findFootnote(book, block, ref)
+        io.github.galis228.materialereader.data.Stats.get(appCtx).bump("footnote")
         footnoteContext = sentenceAround(text, ref.start until ref.end.coerceAtLeast(ref.start + 1))
         return true
     }

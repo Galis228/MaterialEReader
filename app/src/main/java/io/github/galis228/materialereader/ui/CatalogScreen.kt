@@ -220,6 +220,7 @@ private fun download(
     e: OpdsEntry, a: Acquisition, scope: kotlinx.coroutines.CoroutineScope, library: Library,
     snackbar: SnackbarHostState, onOpenBook: (String) -> Unit, setBusy: (String?) -> Unit,
 ) {
+    val ctxStats = library.appContext
     scope.launch {
         setBusy(e.id)
         val result = runCatching {
@@ -228,6 +229,7 @@ private fun download(
         }
         setBusy(null)
         result.onSuccess { book ->
+            io.github.galis228.materialereader.data.Stats.get(ctxStats).bump("catalog")
             if (snackbar.showSnackbar("«${book.title}» на полке", actionLabel = "Читать") == SnackbarResult.ActionPerformed) onOpenBook(book.id)
         }.onFailure { snackbar.showSnackbar("Не удалось скачать: ${it.message}") }
     }

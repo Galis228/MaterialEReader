@@ -1,5 +1,8 @@
 package io.github.galis228.materialereader.ui
 
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.material3.TextButton
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -152,9 +155,37 @@ fun StatsScreen(onBack: () -> Unit) {
                     }
                 }
             }
+            Section("История чтения") { ReadingHistory(books) }
             Spacer(Modifier.height(24.dp))
         }
     }
+}
+
+/** A feed by day: time and words read, books finished, quotes saved. */
+@Composable
+private fun ReadingHistory(books: List<io.github.galis228.materialereader.data.BookEntry>) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val cs = MaterialTheme.colorScheme
+    var n by remember { mutableStateOf(14) }
+    val zone = java.time.ZoneId.systemDefault()
+    fun day(ms: Long) = java.time.Instant.ofEpochMilli(ms).atZone(zone).toLocalDate()
+    val stats = remember { io.github.galis228.materialereader.data.Stats.get(ctx) }
+    val daysList = stats.lastDays(120).reversed()
+    val finished = books.filter { it.finishedAt > 0 }.groupBy { day(it.finishedAt) }
+    val quotes = books.flatMap { b -> b.highlights.map { day(it.createdAt) to b.title } }.groupBy({ it.first }, { it.second })
+    val active = daysList.filter { it.millis >= 60_000 || finished[it.date] != null || quotes[it.date] != null }
+    if (active.isEmpty()) { Text("Здесь появится лента твоего чтения по дням.", color = cs.onSurfaceVariant); return }
+    val fmt = java.time.format.DateTimeFormatter.ofPattern("d MMMM, EEEE", Locale("ru"))
+    active.take(n).forEach { d ->
+        Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+            Text(if (d.date == LocalDate.now()) "Сегодня" else if (d.date == LocalDate.now().minusDays(1)) "Вчера" else d.date.format(fmt),
+                style = MaterialTheme.typography.labelLarge, color = cs.primary)
+            if (d.millis >= 60_000) Text("⏱ ${d.millis / 60_000} мин" + if (d.words > 0) " · ${d.words} слов" else "", style = MaterialTheme.typography.bodyMedium)
+            finished[d.date]?.forEach { Text("🏁 Дочитана «${it.title}»", style = MaterialTheme.typography.bodyMedium) }
+            quotes[d.date]?.groupingBy { it }?.eachCount()?.forEach { (t, c) -> Text("✍️ $c ${if (c == 1) "выделение" else "выделений"} в «$t»", style = MaterialTheme.typography.bodyMedium) }
+        }
+    }
+    if (active.size > n) TextButton(onClick = { n += 30 }) { Text("Показать ещё") }
 }
 
 @Composable
@@ -165,8 +196,9 @@ private fun Badge(a: io.github.galis228.materialereader.data.Achievement, modifi
         Column(Modifier.padding(12.dp)) {
             Text(a.icon, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.then(if (a.done) Modifier else Modifier.alpha(0.35f)))
             Text(a.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            if (a.tierName.isNotEmpty()) Text("${listOf("🥉", "🥈", "🥇").getOrElse(a.level - 1) { "🥇" }} ${a.tierName}", style = MaterialTheme.typography.labelMedium, color = cs.onTertiaryContainer)
             Text(a.hint, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
-            if (!a.done) {
+            if (!a.maxed) {
                 LinearProgressIndicator(progress = { a.fraction }, Modifier.fillMaxWidth().padding(top = 6.dp))
                 Text("${a.have} / ${a.need}", style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
             }

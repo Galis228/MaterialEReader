@@ -78,6 +78,7 @@ data class BookEntry(
 }
 
 class Library private constructor(private val ctx: Context) {
+    val appContext: Context get() = ctx
     private val dir = File(ctx.filesDir, "books").apply { mkdirs() }
     private val coversDir = File(ctx.filesDir, "covers").apply { mkdirs() }
     private val indexFile = File(ctx.filesDir, "library.json")
@@ -170,7 +171,7 @@ class Library private constructor(private val ctx: Context) {
             }
         }
         withContext(Dispatchers.IO) { save() }
-        if (addMillis > 0) Stats.get(ctx).addReading(addMillis, entry(id)?.author.orEmpty())
+        if (addMillis > 0) { Stats.get(ctx).addReading(addMillis, entry(id)?.author.orEmpty()); Achievements.check(ctx) }
         ContinueWidget.refresh(ctx)
     }
 

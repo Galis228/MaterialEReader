@@ -80,7 +80,9 @@ object Translate {
         val client = Translation.getClient(TranslatorOptions.Builder().setSourceLanguage(source).setTargetLanguage(to).build())
         try {
             client.downloadModelIfNeeded().await()
-            return Result(client.translate(text).await(), source, to)
+            val out = client.translate(text).await()
+            Stats.get(ctx).bump("translate"); Stats.get(ctx).addLanguage(source)
+            return Result(out, source, to)
         } finally { client.close() }
     }
 

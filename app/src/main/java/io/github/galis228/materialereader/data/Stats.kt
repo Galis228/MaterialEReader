@@ -30,9 +30,39 @@ class Stats private constructor(ctx: Context) {
         get() = prefs.getInt("goal", 12)
         set(v) { prefs.edit().putInt("goal", v.coerceIn(1, 500)).apply(); _rev.value++ }
 
+    // ---- event counters for achievements ----
+    fun count(key: String): Long = prefs.getLong("c_$key", 0L)
+    fun bump(key: String, n: Long = 1) { prefs.edit().putLong("c_$key", count(key) + n).apply() }
+    /** Counts at most once per day (e.g. days when you read at night). */
+    private fun onceToday(key: String) {
+        val t = LocalDate.now().toString()
+        if (prefs.getString("d_$key", "") != t) { prefs.edit().putString("d_$key", t).apply(); bump(key) }
+    }
+    fun addLanguage(lang: String) {
+        val set = prefs.getStringSet("langs", emptySet())!!.toMutableSet()
+        if (set.add(lang)) prefs.edit().putStringSet("langs", set).apply()
+    }
+    fun languages(): Int = prefs.getStringSet("langs", emptySet())!!.size
+    /** Longest sitting, in minutes: reading with no break longer than 10 minutes. */
+    fun longestSitting(): Long = prefs.getLong("s_max", 0L) / 60_000
+    @Synchronized fun readingDays(): Int = days.count { it.value[0] >= 60_000L }
+    @Synchronized fun totalWords(): Long = days.values.sumOf { it[1] }
+
     @Synchronized fun addReading(millis: Long, author: String) {
         if (millis <= 0) return
         val today = LocalDate.now()
+        if (days[today.toString()] == null) {
+            // back after a month away
+            val last = days.filter { it.value[0] >= 60_000L }.keys.mapNotNull { runCatching { LocalDate.parse(it) }.getOrNull() }.maxOrNull()
+            if (last != null && java.time.temporal.ChronoUnit.DAYS.between(last, today) >= 30) bump("comeback")
+        }
+        val hour = java.time.LocalTime.now().hour
+        if (hour in 0..4) onceToday("night")
+        if (hour in 5..7) onceToday("morning")
+        if (today.dayOfWeek.value >= 6) onceToday("weekend")
+        val now = System.currentTimeMillis()
+        val len = (if (now - prefs.getLong("s_last", 0L) < 10 * 60_000L) prefs.getLong("s_len", 0L) else 0L) + millis
+        prefs.edit().putLong("s_last", now).putLong("s_len", len).putLong("s_max", maxOf(len, prefs.getLong("s_max", 0L))).apply()
         days.getOrPut(today.toString()) { LongArray(2) }[0] += millis
         if (author.isNotBlank()) authors.merge("${today.year}|$author", millis, Long::plus)
         save()
