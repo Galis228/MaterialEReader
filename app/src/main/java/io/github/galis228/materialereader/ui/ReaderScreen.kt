@@ -95,6 +95,10 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextMeasurer
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -610,17 +614,61 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
 
 private fun lerpColor(a: Color, b: Color, t: Float) = androidx.compose.ui.graphics.lerp(a, b, t)
 
+/**
+ * Draws a page from text layouts measured exactly like the paginator measures them, with the same
+ * spacing arithmetic, so what fits in pagination always fits on screen (no clipped bottom line).
+ */
 @Composable
 private fun PageView(page: Page, book: ParsedBook, specs: Map<Block.Kind, BlockSpec>) {
-    Column(Modifier.fillMaxWidth()) {
-        page.slices.forEachIndexed { k, sl ->
-            val b = book.blocks[sl.block]
-            val full = if (b.kind == Block.Kind.SEPARATOR) "* * *" else b.text
-            val text = sliceText(full, sl.start, sl.end)
-            SliceText(text, specs.getValue(b.kind), sl.start, first = k == 0, block = sl.block)
+    val measurer = rememberTextMeasurer(cacheSize = 0)
+    val hits = LocalBlockHits.current
+    val highlights = LocalHighlights.current
+    val dark = LocalPageDark.current
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val width = constraints.maxWidth
+        val placed = remember(page, specs, width, measurer) {
+            var y = 0f
+            page.slices.mapIndexed { k, sl ->
+                val b = book.blocks[sl.block]
+                val spec = specs.getValue(b.kind)
+                val full = if (b.kind == Block.Kind.SEPARATOR) "* * *" else b.text
+                val w = (width - spec.padStart - spec.padEnd).toInt().coerceAtLeast(1)
+                val layout = measurer.measure(sliceText(full, sl.start, sl.end), spec.forSlice(sl.start),
+                    constraints = Constraints(maxWidth = w), skipCache = true)
+                val top = y + spec.topOnPage(k == 0)
+                y = top + layout.size.height + spec.bottom
+                PlacedSlice(sl.block, layout, Offset(spec.padStart, top), w)
+            }
+        }
+        var origin by remember { mutableStateOf(Offset.Zero) }
+        if (hits != null) {
+            val tokens = remember(placed) { placed.map { Any() } }
+            DisposableEffect(tokens) { onDispose { tokens.forEach { hits.remove(it) } } }
+            LaunchedEffect(origin, placed) {
+                placed.forEachIndexed { i, p ->
+                    hits.put(tokens[i], p.block, androidx.compose.ui.geometry.Rect(origin + p.at,
+                        androidx.compose.ui.geometry.Size(p.width.toFloat(), p.layout.size.height.toFloat())))
+                }
+            }
+        }
+        Canvas(
+            Modifier.fillMaxSize()
+                .onGloballyPositioned { origin = it.positionInRoot() }
+                .semantics { contentDescription = placed.joinToString("\n") { it.layout.layoutInput.text.text } },
+        ) {
+            for (p in placed) {
+                highlights[p.block]?.let { h ->
+                    drawRoundRect(highlightTint(h.color, dark), topLeft = p.at,
+                        size = androidx.compose.ui.geometry.Size(p.width.toFloat(), p.layout.size.height.toFloat()),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(4.dp.toPx()))
+                }
+                drawText(p.layout, topLeft = p.at)
+            }
         }
     }
 }
+
+private class PlacedSlice(val block: Int, val layout: androidx.compose.ui.text.TextLayoutResult, val at: Offset, val width: Int)
 
 /** Page-turn effects. Pages with a higher index are drawn on top, so effects animate the incoming page. */
 private fun Modifier.pageTransition(pager: PagerState, page: Int, anim: PageAnim): Modifier = this
