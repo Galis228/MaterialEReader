@@ -76,7 +76,7 @@ fun highlightTint(color: Int, dark: Boolean): Color =
 
 /** Where each paragraph is on screen right now, so a long press can tell which one was pressed. */
 /** A piece of text on screen: [rect] in root coordinates, [startChar] = where the piece begins in its paragraph. */
-class Hit(val block: Int, val rect: Rect, val layout: androidx.compose.ui.text.TextLayoutResult?, val startChar: Int) {
+class Hit(val block: Int, val rect: Rect, val layout: androidx.compose.ui.text.TextLayoutResult?, val startChar: Int, val page: Int = -1) {
     /** Character of the paragraph under [p], or null without a layout. */
     fun charAt(p: Offset): Int? = layout?.let { l ->
         (l.getOffsetForPosition(p - rect.topLeft) + startChar).coerceAtMost(startChar + l.layoutInput.text.length - 1).coerceAtLeast(startChar)
@@ -101,14 +101,27 @@ class Hit(val block: Int, val rect: Rect, val layout: androidx.compose.ui.text.T
 class BlockHits {
     // keyed by the on-screen text piece: one paragraph can be split across two composed pages
     private val hits = HashMap<Any, Hit>()
-    fun put(token: Any, block: Int, r: Rect, layout: androidx.compose.ui.text.TextLayoutResult? = null, startChar: Int = 0) {
-        hits[token] = Hit(block, r, layout, startChar)
+    /**
+     * The page on screen. Neighbouring pages stay composed (the pager keeps them ready, the curl draws two at
+     * once, fade and cover stack them in place), and their text must never answer a tap or a long press.
+     */
+    @Volatile var active: Int = -1
+    fun put(token: Any, block: Int, r: Rect, layout: androidx.compose.ui.text.TextLayoutResult? = null, startChar: Int = 0, page: Int = -1) {
+        hits[token] = Hit(block, r, layout, startChar, page)
     }
     fun remove(token: Any) { hits.remove(token) }
-    fun hitAt(p: Offset): Hit? = hits.values.firstOrNull { it.rect.contains(p) }
+    fun visible(): List<Hit> = hits.values.filter { active < 0 || it.page < 0 || it.page == active }
+    fun hitAt(p: Offset): Hit? = visible().firstOrNull { it.rect.contains(p) }
     fun at(p: Offset): Int? = hitAt(p)?.block
-    fun piecesOf(block: Int): List<Hit> = hits.values.filter { it.block == block }
+    fun piecesOf(block: Int): List<Hit> = visible().filter { it.block == block }
 }
+
+/** Which page a PageView belongs to (for [BlockHits.active]); -1 in scroll mode. */
+val LocalPageTag = staticCompositionLocalOf { -1 }
+
+/** Layout of the whole page area, so text positions are measured from it and not from the moving screen. */
+class PageFrame { var coords by androidx.compose.runtime.mutableStateOf<androidx.compose.ui.layout.LayoutCoordinates?>(null) }
+val LocalPageFrame = staticCompositionLocalOf<PageFrame?> { null }
 
 val LocalBlockHits = staticCompositionLocalOf<BlockHits?> { null }
 val LocalHighlights = staticCompositionLocalOf<Map<Int, List<Highlight>>> { emptyMap() }

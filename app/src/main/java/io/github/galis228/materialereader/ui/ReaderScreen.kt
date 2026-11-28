@@ -2,6 +2,8 @@
 
 package io.github.galis228.materialereader.ui
 
+import androidx.compose.foundation.layout.BoxScope
+import io.github.galis228.materialereader.parse.NoteRef
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitEachGesture
 import android.app.Activity
@@ -383,10 +385,29 @@ private fun BookReader(
         }
     }
     val onDoubleTap: ((Offset) -> Unit)? = if (settings.doubleTap == TapAction.NONE) null else ({ _ -> act(settings.doubleTap) })
-    val slop = with(LocalDensity.current) { 14.dp.toPx() }
+    val slop = with(LocalDensity.current) { 22.dp.toPx() }
+    fun openFootnote(block: Int, ref: NoteRef): Boolean {
+        val text = book.blocks.getOrNull(block)?.text.orEmpty()
+        footnote = findFootnote(book, block, ref)
+        footnoteContext = sentenceAround(text, ref.start until ref.end.coerceAtLeast(ref.start + 1))
+        return true
+    }
     val tapAt: (Offset) -> Boolean = tap@{ p ->
         if (footnote != null) { footnote = null; return@tap true } // a tap on the page closes the note panel
         if (uiVisible || sheet != null) return@tap false
+        // Footnote marks are tiny: take the closest one within reach of the finger, even if the tap
+        // landed between lines or just outside the paragraph.
+        var bestRef: Pair<Hit, NoteRef>? = null; var bestD = Float.MAX_VALUE
+        for (hh in hits.visible()) {
+            val bb = book.blocks.getOrNull(hh.block) ?: continue
+            for (r in bb.allRefs) {
+                val box = hh.boxOf(r.start, r.end)?.translate(hh.rect.topLeft) ?: continue
+                val dx = maxOf(box.left - p.x, 0f, p.x - box.right); val dy = maxOf(box.top - p.y, 0f, p.y - box.bottom)
+                val d = kotlin.math.sqrt(dx * dx + dy * dy)
+                if (d < slop && d < bestD) { bestD = d; bestRef = hh to r }
+            }
+        }
+        bestRef?.let { (hh, ref) -> return@tap openFootnote(hh.block, ref) }
         val h = hits.hitAt(p) ?: return@tap false
         val blk = book.blocks.getOrNull(h.block) ?: return@tap false
         if (blk.kind == Block.Kind.IMAGE) { imageView = h.block; return@tap true }
@@ -399,9 +420,7 @@ private fun BookReader(
             return@tap true
         }
         val ref = blk.allRefs.firstOrNull { r -> near(r.start, r.end) } ?: return@tap false
-        footnote = findFootnote(book, h.block, ref)
-        footnoteContext = sentenceAround(blk.text, ref.start until ref.end.coerceAtLeast(ref.start + 1))
-        true
+        openFootnote(h.block, ref)
     }
 
     // Reader brightness (null = follow the system)
@@ -643,6 +662,7 @@ private fun ScrollContent(
         }
     }
     val bilingual = s.bilingual
+    LocalBlockHits.current?.active = -1
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val w = constraints.maxWidth.toFloat()
         LazyColumn(
@@ -809,8 +829,11 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
         }
 
         val w = constraints.maxWidth.toFloat()
+        LocalBlockHits.current?.active = spread
         val spreadView: @Composable (Int) -> Unit = { sp ->
-            Box(Modifier.fillMaxSize().background(c.bg)) {
+            val frame = remember { PageFrame() }
+            Box(Modifier.fillMaxSize().background(c.bg).onGloballyPositioned { frame.coords = it }) {
+              CompositionLocalProvider(LocalPageTag provides sp, LocalPageFrame provides frame) {
                 Row(
                     Modifier.align(Alignment.TopCenter).padding(top = topPad),
                     horizontalArrangement = Arrangement.spacedBy(gutter),
@@ -822,15 +845,19 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
                         }
                     }
                 }
-                val ch = book.chapters.lastOrNull { it.startBlock <= (list.getOrNull(sp * per)?.firstBlock ?: 0) }?.title.orEmpty()
-                Row(
-                    Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                        .padding(start = margin, end = margin, bottom = bars.calculateBottomPadding() + 10.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Text(ch, color = c.muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                    Text(if (s.noSpoilers) "${sp * per + 1}" else "${sp * per + 1} / ${list.size}", color = c.muted, fontSize = 11.sp, modifier = Modifier.padding(start = 12.dp))
-                }
+              }
+            }
+        }
+        // Chapter and page number stay still while pages turn: drawn above the pager, not on the page
+        val footer: @Composable BoxScope.() -> Unit = {
+            val ch = book.chapters.lastOrNull { it.startBlock <= (list.getOrNull(spread * per)?.firstBlock ?: 0) }?.title.orEmpty()
+            Row(
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                    .padding(start = margin, end = margin, bottom = bars.calculateBottomPadding() + 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(ch, color = c.muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                Text(if (s.noSpoilers) "${spread * per + 1}" else "${spread * per + 1} / ${list.size}", color = c.muted, fontSize = 11.sp, modifier = Modifier.padding(start = 12.dp))
             }
         }
 
@@ -842,6 +869,7 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
                 paper = lerpColor(c.bg, if (c.isDark) Color.White else Color.Black, 0.04f),
                 registerTurn = { curlTurn = it }, onTap = onTap, onLongPress = onLongPress, page = spreadView,
             )
+            footer()
         } else {
             val pager = remember(list, per) { PagerState(currentPage = spread) { spreads } }
             LaunchedEffect(pager) { snapshotFlow { pager.currentPage }.collect { spread = it } }
@@ -859,6 +887,7 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
             ) { sp ->
                 Box(Modifier.fillMaxSize().pageTransition(pager, sp, s.anim)) { spreadView(sp) }
             }
+            footer()
         }
     }
 }
@@ -903,20 +932,25 @@ private fun PageView(page: Page, book: ParsedBook, specs: Map<Block.Kind, BlockS
                 }
             }
         }
-        var origin by remember { mutableStateOf(Offset.Zero) }
+        val frame = LocalPageFrame.current
+        val tag = LocalPageTag.current
+        var mine by remember { mutableStateOf<androidx.compose.ui.layout.LayoutCoordinates?>(null) }
         if (hits != null) {
             val tokens = remember(placed) { placed.map { Any() } }
             DisposableEffect(tokens) { onDispose { tokens.forEach { hits.remove(it) } } }
-            LaunchedEffect(origin, placed) {
+            LaunchedEffect(mine, frame?.coords, placed) {
+                val own = mine?.takeIf { it.isAttached } ?: return@LaunchedEffect
+                // measured inside the page area, which sits still under the finger once the page has turned
+                val origin = frame?.coords?.takeIf { it.isAttached }?.localPositionOf(own, Offset.Zero) ?: own.positionInRoot()
                 placed.forEachIndexed { i, p ->
                     hits.put(tokens[i], p.block, androidx.compose.ui.geometry.Rect(origin + p.at,
-                        androidx.compose.ui.geometry.Size(p.width.toFloat(), (p.layout?.size?.height ?: p.box.height).toFloat())), p.layout, p.startChar)
+                        androidx.compose.ui.geometry.Size(p.width.toFloat(), (p.layout?.size?.height ?: p.box.height).toFloat())), p.layout, p.startChar, tag)
                 }
             }
         }
         Canvas(
             Modifier.fillMaxSize()
-                .onGloballyPositioned { origin = it.positionInRoot() }
+                .onGloballyPositioned { mine = it }
                 .semantics { contentDescription = placed.joinToString("\n") { it.layout?.layoutInput?.text?.text ?: "иллюстрация" } },
         ) {
             for (p in placed) {

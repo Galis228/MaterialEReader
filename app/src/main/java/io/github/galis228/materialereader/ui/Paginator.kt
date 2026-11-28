@@ -144,6 +144,11 @@ class Paginator(
                     fit--
                     end = start + layout.getLineEnd(fit - 1)
                 }
+                // never split a word across pages ("финан-" / "систа"): end the page before that word instead
+                if (end in (start + 1) until text.length && text[end - 1].isLetter() && text[end].isLetter()) {
+                    val space = text.lastIndexOf(' ', end - 1)
+                    if (space > start) end = space + 1
+                }
                 cur += Slice(i, start, end)
                 push()
                 start = end

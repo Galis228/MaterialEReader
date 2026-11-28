@@ -3,6 +3,7 @@ package io.github.galis228.materialereader.data
 import android.content.Context
 import com.google.mlkit.common.model.RemoteModelManager
 import com.google.mlkit.nl.languageid.LanguageIdentification
+import com.google.mlkit.nl.languageid.LanguageIdentificationOptions
 import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.TranslateRemoteModel
 import com.google.mlkit.nl.translate.Translation
@@ -12,20 +13,47 @@ import java.util.Locale
 
 /** On-device translation (ML Kit): works offline once the language packs are downloaded. */
 object Translate {
-    val targets = listOf("" to "Авто", TranslateLanguage.RUSSIAN to "Русский", TranslateLanguage.UKRAINIAN to "Українська", TranslateLanguage.ENGLISH to "English")
+    val targets = listOf("" to "Авто", TranslateLanguage.RUSSIAN to "Русский", TranslateLanguage.UKRAINIAN to "Українська", TranslateLanguage.ENGLISH to "English",
+        TranslateLanguage.SPANISH to "Español", TranslateLanguage.ITALIAN to "Italiano", TranslateLanguage.GERMAN to "Deutsch", TranslateLanguage.FRENCH to "Français")
+
+    /** Languages offered as "from" when the guess is wrong. */
+    val sources = listOf(TranslateLanguage.ENGLISH, TranslateLanguage.SPANISH, TranslateLanguage.ITALIAN, TranslateLanguage.GERMAN,
+        TranslateLanguage.FRENCH, TranslateLanguage.RUSSIAN, TranslateLanguage.UKRAINIAN)
 
     fun target(ctx: Context): String = ctx.getSharedPreferences("dict", 0).getString("target", "")!!
     fun setTarget(ctx: Context, lang: String) = ctx.getSharedPreferences("dict", 0).edit().putString("target", lang).apply()
 
-    /** Language of the text: ML Kit's guess, or by alphabet when it isn't sure. */
+    /**
+     * Language of the text, found automatically. Single foreign words inside a Russian book («madre»,
+     * «signore») are too short for a confident guess, so the alphabet and accents decide first, then
+     * ML Kit's list of likely languages (with a low threshold), then English.
+     */
     suspend fun detect(text: String): String {
-        val id = runCatching { LanguageIdentification.getClient().identifyLanguage(text).await() }.getOrDefault("und")
-        if (id != "und" && TranslateLanguage.fromLanguageTag(id) != null) return id
-        return when {
-            text.any { it in "іїєґІЇЄҐ" } -> TranslateLanguage.UKRAINIAN
-            text.any { it in 'а'..'я' || it in 'А'..'Я' } -> TranslateLanguage.RUSSIAN
-            else -> TranslateLanguage.ENGLISH
-        }
+        val t = text.trim()
+        guessByLetters(t)?.let { return it }
+        val client = LanguageIdentification.getClient(LanguageIdentificationOptions.Builder().setConfidenceThreshold(0.05f).build())
+        val cands = runCatching { client.identifyPossibleLanguages(t).await() }.getOrDefault(emptyList())
+            .filter { it.languageTag != "und" && TranslateLanguage.fromLanguageTag(it.languageTag) != null }
+            .sortedByDescending { it.confidence }
+        client.close()
+        val best = cands.firstOrNull()
+        // a long text is trusted as is; a short one only among the languages people actually read here
+        if (best != null && (best.confidence >= 0.5f || t.length > 40)) return best.languageTag
+        cands.firstOrNull { it.languageTag in sources }?.let { return it.languageTag }
+        return best?.languageTag ?: TranslateLanguage.ENGLISH
+    }
+
+    /** Cyrillic by its letters; Latin-script languages by letters only they use. */
+    fun guessByLetters(t: String): String? = when {
+        t.any { it in "іїєґІЇЄҐ" } -> TranslateLanguage.UKRAINIAN
+        t.any { it in 'а'..'я' || it in 'А'..'Я' || it == 'ё' || it == 'Ё' } -> TranslateLanguage.RUSSIAN
+        t.any { it in "ñÑ¿¡" } -> TranslateLanguage.SPANISH
+        t.any { it in "ßäöüÄÖÜ" } -> TranslateLanguage.GERMAN
+        t.any { it in "çœÇŒêâîôûëïÊÂÎÔÛËÏ" } -> TranslateLanguage.FRENCH
+        // ì and ò are Italian only; so is a word ending in an accented vowel (città, più) — except French là, où, déjà
+        t.any { it in "ìòÌÒ" } || Regex("\\p{L}+[àèù](?!\\p{L})").findAll(t.lowercase()).any { it.value !in setOf("là", "déjà", "où", "voilà", "café", "été") } ->
+            TranslateLanguage.ITALIAN
+        else -> null
     }
 
     private fun chooseTarget(ctx: Context, source: String): String {

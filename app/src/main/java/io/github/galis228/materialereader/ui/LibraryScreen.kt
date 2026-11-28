@@ -227,6 +227,16 @@ fun LibraryScreen(onOpen: (String) -> Unit, onCatalog: () -> Unit, onSettings: (
                         }
                     }
                 }
+                shelf?.takeIf { it != HIDDEN_SHELF }?.let { sh ->
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.AutoMirrored.Rounded.Label, null, tint = MaterialTheme.colorScheme.primary)
+                            Text(sh, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 8.dp).weight(1f))
+                            Text(booksWord(shown.size), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            ShelfMenuButton(sh, onDeleted = { shelf = null }, onRenamed = { shelf = it })
+                        }
+                    }
+                }
                 if (!simple) item(span = { GridItemSpan(maxLineSpan) }) {
                     SortViewRow(sort, view, onSort = { sort = it; prefs.edit().putString("sort", it.name).apply() },
                         onView = { view = it; prefs.edit().putString("view", it.name).apply() })

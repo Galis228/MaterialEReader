@@ -23,6 +23,7 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -91,7 +92,8 @@ fun BookShelvesSheet(bookId: String, onDismiss: () -> Unit) {
                         Checkbox(checked = on, onCheckedChange = { scope.launch { library.toggleShelf(book.id, sh) } })
                         Text(sh, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
                         Text("${books.count { sh in it.shelves }}", color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(end = 12.dp))
+                            style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(end = 4.dp))
+                        ShelfMenuButton(sh)
                     }
                 }
             }
@@ -191,3 +193,42 @@ fun booksWord(n: Int): String {
 }
 
 @Suppress("unused") private fun BookEntry.onShelf(s: String) = s in shelves
+
+/** ⋮ next to a shelf: rename or delete it. */
+@Composable
+fun ShelfMenuButton(shelf: String, onDeleted: () -> Unit = {}, onRenamed: (String) -> Unit = {}) {
+    val library = Library.get(LocalContext.current)
+    val scope = rememberCoroutineScope()
+    var menu by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf(false) }
+    androidx.compose.foundation.layout.Box {
+        IconButton(onClick = { menu = true }) { Icon(Icons.Rounded.MoreVert, "Действия с полкой") }
+        androidx.compose.material3.DropdownMenu(menu, { menu = false }) {
+            androidx.compose.material3.DropdownMenuItem({ Text("Переименовать") }, leadingIcon = { Icon(Icons.Rounded.Edit, null) },
+                onClick = { menu = false; renaming = true })
+            androidx.compose.material3.DropdownMenuItem({ Text("Удалить полку") }, leadingIcon = { Icon(Icons.Rounded.Delete, null) },
+                onClick = { menu = false; deleting = true })
+        }
+    }
+    if (renaming) {
+        var name by remember { mutableStateOf(shelf) }
+        AlertDialog(
+            onDismissRequest = { renaming = false },
+            title = { Text("Переименовать полку") },
+            text = { NewShelfField(name, { name = it }, {}, Modifier, autoFocus = true, withButton = false) },
+            confirmButton = { TextButton(enabled = name.isNotBlank(), onClick = {
+                val n = name.trim(); renaming = false
+                scope.launch { library.renameShelf(shelf, n); onRenamed(n) }
+            }) { Text("Сохранить") } },
+            dismissButton = { TextButton(onClick = { renaming = false }) { Text("Отмена") } },
+        )
+    }
+    if (deleting) AlertDialog(
+        onDismissRequest = { deleting = false },
+        title = { Text("Удалить полку «$shelf»?") },
+        text = { Text("Книги останутся в библиотеке, уберётся только полка.") },
+        confirmButton = { TextButton(onClick = { deleting = false; scope.launch { library.deleteShelf(shelf); onDeleted() } }) { Text("Удалить") } },
+        dismissButton = { TextButton(onClick = { deleting = false }) { Text("Отмена") } },
+    )
+}

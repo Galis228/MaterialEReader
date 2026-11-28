@@ -117,6 +117,8 @@ fun SelectionSheet(
     var error by remember { mutableStateOf<String?>(null) }
     var job by remember { mutableStateOf<Job?>(null) }
     var lang by remember { mutableStateOf<String?>(null) }
+    /** Chosen by hand when the automatic guess was wrong. */
+    var forced by remember { mutableStateOf<String?>(null) }
     val focus = remember { FocusRequester() }
     val maxText = (LocalConfiguration.current.screenHeightDp * 0.22f).dp
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
@@ -130,7 +132,7 @@ fun SelectionSheet(
         job?.cancel(); error = null; translation = null
         job = scope.launch {
             runCatching {
-                val src = Translate.detect(selected).also { lang = it }
+                val src = (forced ?: Translate.detect(selected)).also { lang = it }
                 status = if (Translate.needsDownload(ctx, src)) "Скачиваю языковой пакет (около 30 МБ, один раз)…" else "Перевожу…"
                 val r = Translate.translate(ctx, selected, src)
                 translation = r.text
@@ -224,9 +226,17 @@ fun SelectionSheet(
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             translation?.let { t ->
                 Column {
-                    Text("Перевод" + (lang?.let { " · с языка: ${Translate.name(it)}" } ?: ""), style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary)
+                    Text("Перевод" + (lang?.let { " · с языка: ${Translate.name(it)}" + if (forced == null) " (определён сам)" else "" } ?: ""),
+                        style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     Text(t, style = MaterialTheme.typography.bodyLarge)
+                    // if the guess was wrong: pick the language and translate again
+                    androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 6.dp)) {
+                        items(Translate.sources.size) { i ->
+                            val l = Translate.sources[i]
+                            androidx.compose.material3.FilterChip(selected = lang == l, onClick = { forced = l; translate() },
+                                label = { Text(Translate.name(l)) })
+                        }
+                    }
                 }
             }
             // the book's own glossary (made by the AI earlier) answers at once, without asking again
