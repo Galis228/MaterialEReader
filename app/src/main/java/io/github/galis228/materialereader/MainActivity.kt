@@ -87,7 +87,7 @@ class MainActivity : ComponentActivity() {
                             onSearch = { nav.navigate("search") },
                         )
                     }
-                    composable("ainotes") { io.github.galis228.materialereader.ui.AiNotesScreen(onBack = { nav.popBackStack() }) }
+                    composable("ainotes") { io.github.galis228.materialereader.ui.AiNotesScreen(onBack = { nav.popBackStack() }, onOpenAt = { id, b -> nav.navigate("reader/$id?b=$b&c=0") }) }
                     composable("stats") { io.github.galis228.materialereader.ui.StatsScreen(onBack = { nav.popBackStack() }) }
                     composable(
                         "reader/{id}?b={b}&c={c}",

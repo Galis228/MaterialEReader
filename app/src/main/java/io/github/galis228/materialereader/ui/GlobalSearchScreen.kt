@@ -1,5 +1,9 @@
 package io.github.galis228.materialereader.ui
 
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Row
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material3.FilterChip
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -63,15 +67,22 @@ fun GlobalSearchScreen(onBack: () -> Unit, onOpenAt: (id: String, block: Int, ch
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
 
+    var meaning by rememberSaveable { mutableStateOf(false) }
+    var terms by remember { mutableStateOf<List<String>>(emptyList()) }
     fun run() {
         val q = query.trim()
         if (q.length < 2) return
-        job?.cancel(); results.clear()
+        job?.cancel(); results.clear(); terms = emptyList()
         val books = library.books.value.filter { !it.isComic && !it.hidden }.sortedByDescending { it.lastOpenedAt }
         job = scope.launch {
+            progress = 0f
+            // by meaning: the AI turns a topic into words such a passage would contain, then those are searched
+            val words = if (meaning) runCatching { io.github.galis228.materialereader.ai.LibraryAi.expand(ctx, q) }.getOrDefault(listOf(q)).also { terms = it } else listOf(q)
             books.forEachIndexed { i, b ->
                 progress = i.toFloat() / books.size.coerceAtLeast(1)
-                val hits = withContext(Dispatchers.Default) { runCatching { searchBook(library.open(b.id), q, 30) }.getOrDefault(emptyList()) }
+                val hits = withContext(Dispatchers.Default) {
+                    runCatching { val book = library.open(b.id); words.flatMap { w -> searchBook(book, w, if (words.size > 1) 8 else 30) } }.getOrDefault(emptyList())
+                }.distinctBy { it.block }.sortedBy { it.block }.take(30)
                 if (hits.isNotEmpty()) results += b to hits
             }
             progress = -1f
@@ -83,11 +94,18 @@ fun GlobalSearchScreen(onBack: () -> Unit, onOpenAt: (id: String, block: Int, ch
     }) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
             OutlinedTextField(
-                query, { query = it }, singleLine = true, placeholder = { Text("Слово, имя или цитата") },
+                query, { query = it }, singleLine = true, placeholder = { Text(if (meaning) "Тема: «разлука», «море», «предательство»" else "Слово, имя или цитата") },
                 leadingIcon = { Icon(Icons.Rounded.Search, null) },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { run() }),
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).focusRequester(focus),
             )
+            Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(selected = !meaning, onClick = { meaning = false }, label = { Text("Точно") })
+                FilterChip(selected = meaning, onClick = { meaning = true }, label = { Text("По смыслу (ИИ)") },
+                    leadingIcon = { Icon(Icons.Rounded.AutoAwesome, null, Modifier.size(18.dp)) })
+            }
+            if (meaning && terms.isNotEmpty()) Text("Ищу: " + terms.joinToString(", "), style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp))
             if (progress >= 0f) LinearProgressIndicator(progress = { progress }, Modifier.fillMaxWidth().padding(16.dp))
             val total = results.sumOf { it.second.size }
             if (results.isNotEmpty()) Text("Найдено: $total в ${results.size} ${if (results.size == 1) "книге" else "книгах"}",

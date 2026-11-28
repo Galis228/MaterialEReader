@@ -1,5 +1,21 @@
 package io.github.galis228.materialereader.ui
 
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.Backup
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.automirrored.rounded.MenuBook
+import androidx.compose.material.icons.rounded.LocalLibrary
+import androidx.compose.material.icons.rounded.Palette
 import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -135,18 +151,88 @@ fun AppSettingsScreen(onBack: () -> Unit) {
         )
     }
 
+    val repo = remember { io.github.galis228.materialereader.data.SettingsRepo(ctx) }
+    val rs by repo.settings.collectAsState(initial = null)
+    fun edit(change: (io.github.galis228.materialereader.data.ReaderSettings) -> io.github.galis228.materialereader.data.ReaderSettings) {
+        rs?.let { r -> scope.launch { repo.update(change(r)) } }
+    }
+    /** null = the list of categories; otherwise the open category. */
+    var page by rememberSaveable { mutableStateOf<SettingsPage?>(null) }
+    androidx.activity.compose.BackHandler(enabled = page != null) { page = null }
+    val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+
     Scaffold(
+        modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
         topBar = {
-            TopAppBar(title = { Text("Настройки") }, navigationIcon = {
-                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Назад") }
+            LargeTopAppBar(title = { Text(page?.title ?: "Настройки") }, scrollBehavior = scroll, navigationIcon = {
+                IconButton(onClick = { if (page != null) page = null else onBack() }) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Назад") }
             })
         },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { pad ->
-        LazyColumn(Modifier.padding(pad).fillMaxSize()) {
+        androidx.compose.animation.AnimatedContent(page, label = "settings", transitionSpec = {
+            (androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(220, 60)) +
+                androidx.compose.animation.slideInHorizontally { if (targetState != null) it / 8 else -it / 8 }) togetherWith
+                androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(120))
+        }) { shownPage ->
+        LazyColumn(Modifier.padding(pad).fillMaxSize(), contentPadding = PaddingValues(bottom = 32.dp)) {
+            when (shownPage) {
+            null -> {
+                items(SettingsPage.entries) { p ->
+                    ListItem(
+                        headlineContent = { Text(p.title, style = MaterialTheme.typography.titleMedium) },
+                        supportingContent = { Text(p.summary) },
+                        leadingContent = {
+                            Box(Modifier.size(44.dp).clip(RoundedCornerShape(14.dp)).background(p.tint(MaterialTheme.colorScheme)), contentAlignment = Alignment.Center) {
+                                Icon(p.icon, null, tint = MaterialTheme.colorScheme.onSecondaryContainer)
+                            }
+                        },
+                        modifier = Modifier.clickable { page = p }.padding(horizontal = 4.dp, vertical = 2.dp),
+                    )
+                }
+                item {
+                    Text("Шрифт, отступы, тема страницы и анимации листания настраиваются прямо в книге — кнопка «Текст» внизу.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp))
+                }
+            }
+            SettingsPage.LOOK -> {
+                item { Section("Цвета приложения") }
+                item {
+                    Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                            val opts = io.github.galis228.materialereader.data.AppColor.entries
+                            opts.forEachIndexed { i, o ->
+                                SegmentedButton(selected = rs?.appColor == o, onClick = { edit { it.copy(appColor = o) } },
+                                    shape = SegmentedButtonDefaults.itemShape(i, opts.size)) { Text(o.label, maxLines = 2, style = MaterialTheme.typography.labelMedium) }
+                            }
+                        }
+                        Text(when (rs?.appColor) {
+                            io.github.galis228.materialereader.data.AppColor.COVER -> "Цвета подбираются под обложку книги, которую ты читаешь."
+                            io.github.galis228.materialereader.data.AppColor.CLASSIC -> "Спокойная зелёная тема приложения."
+                            else -> "Material You: цвета из обоев телефона."
+                        }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                item { Section("Тёмная тема") }
+                item {
+                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                        val opts = io.github.galis228.materialereader.data.DarkMode.entries
+                        opts.forEachIndexed { i, o ->
+                            SegmentedButton(selected = rs?.darkMode == o, onClick = { edit { it.copy(darkMode = o) } },
+                                shape = SegmentedButtonDefaults.itemShape(i, opts.size)) { Text(o.label, maxLines = 1) }
+                        }
+                    }
+                }
+                item {
+                    ListItem(
+                        headlineContent = { Text("Чёрный фон для OLED") },
+                        supportingContent = { Text("В тёмной теме — чисто чёрные экраны, экономят батарею") },
+                        trailingContent = { Switch(checked = rs?.amoled == true, onCheckedChange = { v -> edit { it.copy(amoled = v) } }) },
+                    )
+                }
+                item { HorizontalDivider(Modifier.padding(vertical = 8.dp, horizontal = 16.dp)) }
             item {
-                val repo = remember { io.github.galis228.materialereader.data.SettingsRepo(ctx) }
-                val rs by repo.settings.collectAsState(initial = null)
                 rs?.let { r ->
                     ListItem(
                         headlineContent = { Text("Простой режим") },
@@ -162,8 +248,24 @@ fun AppSettingsScreen(onBack: () -> Unit) {
                     )
                 }
             }
-            item { HorizontalDivider(Modifier.padding(vertical = 4.dp)) }
-            item { Section("Автопоиск книг") }
+            }
+            SettingsPage.LIBRARY -> {
+                item { Section("Вид библиотеки") }
+                item {
+                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                        val opts = io.github.galis228.materialereader.data.LibraryLayout.entries
+                        opts.forEachIndexed { i, o ->
+                            SegmentedButton(selected = rs?.libraryLayout == o, onClick = { edit { it.copy(libraryLayout = o) } },
+                                shape = SegmentedButtonDefaults.itemShape(i, opts.size)) { Text(o.label, maxLines = 1) }
+                        }
+                    }
+                }
+                item {
+                    Text(if (rs?.libraryLayout == io.github.galis228.materialereader.data.LibraryLayout.ROWS)
+                        "Каждая полка — ряд обложек; фильтры и сортировка — за кнопкой «Показать»." else "Полки — вкладками сверху, сортировка и вид — в строке над книгами.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                }
+                item { Section("Автопоиск книг") }
             item {
                 Text(
                     "Выбери папки — например, Books, Documents или Download/Telegram. Приложение само добавит из них EPUB, FB2, TXT, CBZ и CBR при каждом запуске. Android не даёт выбрать корень «Загрузок» целиком — выбирай папку внутри.",
@@ -186,9 +288,7 @@ fun AppSettingsScreen(onBack: () -> Unit) {
                     }) { Text(if (scanning) "Сканирую…" else "Сканировать сейчас") }
                 }
             }
-            item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
-
-            item { Section("Каталоги OPDS") }
+                item { Section("Каталоги OPDS") }
             items(catalogs, key = { it.url }) { c ->
                 ListItem(
                     headlineContent = { Text(c.name) },
@@ -202,9 +302,9 @@ fun AppSettingsScreen(onBack: () -> Unit) {
                 )
             }
             item { TextButton(onClick = { addCatalog = true }, modifier = Modifier.padding(horizontal = 8.dp)) { Icon(Icons.Rounded.Add, null); Text(" Добавить каталог") } }
-            item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
-
-            item { Section("Перевод") }
+            }
+            SettingsPage.READING -> {
+                item { Section("Перевод") }
             item {
                 var target by remember { mutableStateOf(io.github.galis228.materialereader.data.Translate.target(ctx)) }
                 Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -220,16 +320,29 @@ fun AppSettingsScreen(onBack: () -> Unit) {
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
-            item { Section("ИИ-помощник") }
-            item { AiSettingsBlock() }
-            item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
-
-            item { Section("Напоминание почитать") }
-            item { ReminderBlock() }
-            item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
-
-            item { Section("Резервная копия") }
+                item { Section("Напоминание почитать") }
+                item { ReminderBlock() }
+            }
+            SettingsPage.AI -> {
+                item { Section("Глубина объяснений") }
+                item {
+                    val levels = listOf("Как ребёнку", "Просто", "Подробно", "Академично")
+                    Column(Modifier.padding(horizontal = 16.dp)) {
+                        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                            levels.forEachIndexed { i, l ->
+                                SegmentedButton(selected = (rs?.aiLevel ?: 1) == i, onClick = { edit { it.copy(aiLevel = i) } },
+                                    shape = SegmentedButtonDefaults.itemShape(i, levels.size)) { Text(l, maxLines = 1, style = MaterialTheme.typography.labelSmall) }
+                            }
+                        }
+                        Text("Влияет на объяснения, пересказы и ответы на вопросы.", style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
+                    }
+                }
+                item { Section("Модель") }
+                item { AiSettingsBlock() }
+            }
+            SettingsPage.DATA -> {
+                item { Section("Резервная копия") }
             item {
                 ListItem(
                     headlineContent = { Text("Сохранить копию") },
@@ -246,9 +359,13 @@ fun AppSettingsScreen(onBack: () -> Unit) {
                 )
             }
             if (busy) item { androidx.compose.material3.LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) }
-            item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
-
-            item { Section("Обновления") }
+            }
+            SettingsPage.ABOUT -> {
+                item {
+                    ListItem(headlineContent = { Text("Material eReader") }, supportingContent = { Text("Версия ${Updater.currentVersion}") },
+                        leadingContent = { Icon(Icons.AutoMirrored.Rounded.MenuBook, null, Modifier.size(40.dp), tint = MaterialTheme.colorScheme.primary) })
+                }
+                item { Section("Обновления") }
             item {
                 ListItem(
                     headlineContent = { Text("Проверять обновления автоматически") },
@@ -276,6 +393,9 @@ fun AppSettingsScreen(onBack: () -> Unit) {
                     }) { Text("Все версии") }
                 }
             }
+            }
+            }
+        }
         }
     }
 
@@ -567,4 +687,20 @@ private fun ReminderBlock() {
             android.app.TimePickerDialog(ctx, { _, hh, mm -> h = hh; m = mm; io.github.galis228.materialereader.data.Reminders.set(ctx, on, hh, mm) }, h, m, true).show()
         },
     )
+}
+
+/** Settings categories, each its own page. */
+private enum class SettingsPage(val title: String, val summary: String, val icon: androidx.compose.ui.graphics.vector.ImageVector) {
+    LOOK("Оформление", "Цвета, тёмная тема, простой режим", Icons.Rounded.Palette),
+    LIBRARY("Библиотека", "Вид, папки с книгами, каталоги", Icons.Rounded.LocalLibrary),
+    READING("Чтение и перевод", "Язык перевода, напоминание почитать", Icons.AutoMirrored.Rounded.MenuBook),
+    AI("ИИ-помощник", "Модель, ключ API, глубина объяснений", Icons.Rounded.AutoAwesome),
+    DATA("Данные", "Резервная копия и восстановление", Icons.Rounded.Backup),
+    ABOUT("О приложении", "Версия и обновления", Icons.Rounded.Info);
+
+    fun tint(cs: androidx.compose.material3.ColorScheme) = when (this) {
+        LOOK, AI -> cs.tertiaryContainer
+        LIBRARY, DATA -> cs.secondaryContainer
+        else -> cs.primaryContainer
+    }
 }

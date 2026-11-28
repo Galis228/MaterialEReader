@@ -41,7 +41,7 @@ object Rich {
                     val body = ArrayList<String>()
                     i++
                     while (i < lines.size && !lines[i].trim().startsWith("```")) { body += lines[i]; i++ }
-                    out += block(kind, body)
+                    if (kind != "people") out += block(kind, body) // data for the character map, not drawn
                 }
                 l.isEmpty() -> flushPara()
                 l.startsWith("#") -> { flushPara(); val lvl = l.takeWhile { it == '#' }.length; out += RichBlock.Heading(lvl.coerceIn(1, 4), l.drop(lvl).trim()) }

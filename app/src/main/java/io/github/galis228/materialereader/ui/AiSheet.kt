@@ -1,5 +1,20 @@
 package io.github.galis228.materialereader.ui
 
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.QuestionAnswer
+import androidx.compose.material.icons.rounded.EditNote
+import androidx.compose.material.icons.rounded.Style
+import androidx.compose.material.icons.rounded.Translate
+import androidx.compose.material.icons.rounded.PersonSearch
+import androidx.compose.material.icons.rounded.Timeline
+import androidx.compose.material.icons.rounded.Groups
+import androidx.compose.material.icons.automirrored.rounded.Subject
+import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.Link
+import androidx.compose.material.icons.automirrored.rounded.ShortText
+import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.rounded.PushPin
@@ -62,11 +77,27 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 
-private enum class AiAction(val label: String) {
-    EXPLAIN("Объяснить страницу"), SIMPLIFY("Упростить текст"), RECAP("Где я остановился?"), CHAPTER("Пересказ главы"),
-    CHARACTERS("Карта персонажей"), TIMELINE("Хронология"), GLOSSARY("Глоссарий"), REFS("Отсылки на странице"),
-    WHO("Кто это?"), ASK("Вопрос"), CARDS("Конспект в карточки"), JOURNAL("Вопрос для дневника"),
+private enum class AiAction(val label: String, val tile: String, val hint: String, val icon: androidx.compose.ui.graphics.vector.ImageVector) {
+    EXPLAIN("Объяснить страницу", "Объяснить", "что здесь происходит", Icons.Rounded.Psychology),
+    SIMPLIFY("Упростить текст", "Упростить", "простым языком", Icons.AutoMirrored.Rounded.ShortText),
+    REFS("Отсылки на странице", "Отсылки", "имена, цитаты, реалии", Icons.Rounded.Link),
+    RECAP("Где я остановился?", "Где я?", "пересказ за 30 секунд", Icons.Rounded.History),
+    CHAPTER("Пересказ главы", "Глава", "пересказ прочитанного", Icons.AutoMirrored.Rounded.Subject),
+    CHARACTERS("Карта персонажей", "Персонажи", "кто есть кто и связи", Icons.Rounded.Groups),
+    TIMELINE("Хронология", "Хронология", "лента событий", Icons.Rounded.Timeline),
+    WHO("Кто это?", "Кто это?", "персонаж, место, вещь", Icons.Rounded.PersonSearch),
+    GLOSSARY("Глоссарий", "Глоссарий", "термины книги", Icons.Rounded.Translate),
+    CARDS("Конспект в карточки", "В карточки", "главные мысли", Icons.Rounded.Style),
+    JOURNAL("Вопрос для дневника", "Дневник", "вопрос по главе", Icons.Rounded.EditNote),
+    ASK("Вопрос", "Вопрос", "о прочитанном", Icons.Rounded.QuestionAnswer),
 }
+
+/** Tiles in three groups, as in the approved concept. */
+private val tileGroups = listOf(
+    "Эта страница" to listOf(AiAction.EXPLAIN, AiAction.SIMPLIFY, AiAction.REFS),
+    "Книга до этого места" to listOf(AiAction.RECAP, AiAction.CHAPTER, AiAction.CHARACTERS, AiAction.TIMELINE, AiAction.WHO, AiAction.GLOSSARY),
+    "Для себя" to listOf(AiAction.CARDS, AiAction.JOURNAL),
+)
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -77,7 +108,8 @@ fun AiSheet(
 ) {
     val ctx = LocalContext.current
     val ai = remember { Ai.get(ctx) }
-    val helper = remember(book) { BookAi(ai, book) }
+    val level = remember { io.github.galis228.materialereader.data.SettingsRepo(ctx) }.settings.collectAsState(initial = null).value?.aiLevel ?: 1
+    val helper = remember(book, level) { BookAi(ai, book, level) }
     val scope = rememberCoroutineScope()
     var label by remember { mutableStateOf("…") }
     var online by remember { mutableStateOf(false) }
@@ -93,7 +125,7 @@ fun AiSheet(
     val saved = history.all.collectAsState().value.filter { it.bookId == bookId }
     var showSaved by remember { mutableStateOf(false) }
     val busy = job?.isActive == true
-    val maxH = (LocalConfiguration.current.screenHeightDp * 0.55f).dp
+    val maxH = (LocalConfiguration.current.screenHeightDp * 0.8f).dp
 
     LaunchedEffect(Unit) { label = ai.label(); online = ai.online() }
     DisposableEffect(Unit) { onDispose { job?.cancel(); ai.cancel() } }
@@ -154,7 +186,6 @@ fun AiSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        scrimColor = Color.Transparent,
     ) {
         Column(
             Modifier.fillMaxWidth().heightIn(max = maxH).padding(horizontal = 20.dp).navigationBarsPadding().padding(bottom = 12.dp),
@@ -176,22 +207,40 @@ fun AiSheet(
                 AiNotesList(saved, Modifier.weight(1f, fill = false))
                 return@Column
             }
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                AiAction.entries.forEach { a ->
-                    AssistChip(onClick = { run(a) }, label = { Text(a.label) }, enabled = !busy)
+            if (action == null) {
+                // the start: action tiles in groups, and a question field at the bottom
+                Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    tileGroups.forEach { (title, acts) ->
+                        Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        acts.chunked(3).forEach { row ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                row.forEach { a -> AiTile(a, Modifier.weight(1f)) { run(a) } }
+                                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                            }
+                        }
+                    }
                 }
+            } else Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { job?.cancel(); ai.cancel(); action = null; answer = ""; status = null; error = null }) {
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Все действия")
+                }
+                Icon(action!!.icon, null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(8.dp))
+                Text(action!!.label, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
             }
-            if (action == AiAction.WHO || action == AiAction.ASK) {
+            if (action == null || action == AiAction.WHO || action == AiAction.ASK) {
+                val target = if (action == AiAction.WHO) AiAction.WHO else AiAction.ASK
                 OutlinedTextField(
                     value = input, onValueChange = { input = it }, singleLine = true,
-                    placeholder = { Text(if (action == AiAction.WHO) "Имя персонажа, место, предмет" else "Спроси о прочитанном") },
+                    placeholder = { Text(if (target == AiAction.WHO) "Имя персонажа, место, предмет" else "Спросить о книге…") },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = { action?.let { run(it) } }),
-                    trailingIcon = { IconButton(onClick = { action?.let { run(it) } }, enabled = input.isNotBlank() && !busy) { Icon(Icons.AutoMirrored.Rounded.Send, "Спросить") } },
+                    keyboardActions = KeyboardActions(onSend = { if (input.isNotBlank()) run(target) }),
+                    trailingIcon = { FilledIconButton(onClick = { run(target) }, enabled = input.isNotBlank() && !busy) { Icon(Icons.AutoMirrored.Rounded.Send, "Спросить") } },
+                    shape = RoundedCornerShape(28.dp),
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
-            Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+            if (action != null)             Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
                 status?.let {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
@@ -203,7 +252,7 @@ fun AiSheet(
                     Text(msg, color = MaterialTheme.colorScheme.error)
                     TextButton(onClick = onOpenSettings) { Text("Открыть настройки ИИ") }
                 }
-                if (answer.isNotEmpty()) RichAnswer(answer)
+                if (answer.isNotEmpty()) { if (action == AiAction.CHARACTERS && !busy) CharacterMap(answer) else RichAnswer(answer) }
                 if (answer.isNotEmpty() && !busy && action != AiAction.JOURNAL && bookId.isNotEmpty())
                     Text("Сохранено — открыть позже можно в «Сохранённом»", style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
@@ -221,6 +270,18 @@ fun AiSheet(
             if (busy) TextButton(onClick = { job?.cancel(); ai.cancel() }, modifier = Modifier.align(Alignment.End)) {
                 Icon(Icons.Rounded.Stop, null); Text(" Остановить", fontWeight = FontWeight.Medium)
             }
+        }
+    }
+}
+
+@Composable
+private fun AiTile(a: AiAction, modifier: Modifier, onClick: () -> Unit) {
+    androidx.compose.material3.Surface(onClick = onClick, modifier = modifier, shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHighest) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Icon(a.icon, null, tint = MaterialTheme.colorScheme.primary)
+            Text(a.tile, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 1)
+            Text(a.hint, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, minLines = 2)
         }
     }
 }

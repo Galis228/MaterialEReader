@@ -4,11 +4,11 @@ import io.github.galis228.materialereader.parse.ParsedBook
 import kotlinx.coroutines.flow.Flow
 
 /** Reading helpers on top of [Ai]. Everything uses only the text up to the reader's position — no spoilers. */
-class BookAi(private val ai: Ai, private val book: ParsedBook) {
+class BookAi(private val ai: Ai, private val book: ParsedBook, private val level: Int = 1) {
 
     private val system = "Ты — помощник читателя книги «${book.title}». Отвечай по-русски, коротко и по делу. " +
         "Опирайся только на данный фрагмент книги. Не придумывай событий и не рассказывай, что будет дальше. " +
-        "Оформляй ответ в Markdown: короткие абзацы, списки, главное **жирным**, таблица — если что-то сравниваешь."
+        "Оформляй ответ в Markdown: короткие абзацы, списки, главное **жирным**, таблица — если что-то сравниваешь." + " " + levelHint(level)
 
     private fun text(from: Int, to: Int) = buildString {
         for (i in from.coerceAtLeast(0) until to.coerceAtMost(book.blocks.size)) { append(book.blocks[i].text); append('\n') }
@@ -96,8 +96,9 @@ class BookAi(private val ai: Ai, private val book: ParsedBook) {
         }
         onStep(0, 0)
         return ai.stream(system, "Составь карту персонажей по прочитанному. Каждая строка строго в формате:\n" +
-            "Имя — кто это, одной фразой; связи: Имя2 (кем приходится), Имя3 (кем приходится)\n" +
-            "Только персонажи, которые уже появились. Не больше 12 строк. Без вступления.\n\n$material", maxOut = 700)
+            "Имя [семья или сторона] — кто это, одной фразой; связи: Имя2 (кем приходится), Имя3 (кем приходится)\n" +
+            "В квадратных скобках — семья, род, дом, команда или сторона конфликта, к которой принадлежит персонаж (одно-два слова, одинаково для всех её членов). " +
+            "Только персонажи, которые уже появились. Не больше 20 строк. Без вступления.\n\n$material", maxOut = 700)
     }
 
     /** Key ideas of the chapter read so far, one per line: "Мысль — пояснение". For non-fiction cards. */
@@ -160,7 +161,16 @@ class BookAi(private val ai: Ai, private val book: ParsedBook) {
         val read = text(0, block + 1)
         val mentions = names.map { n -> n to Regex(Regex.escape(stem(n.split(' ').first())), RegexOption.IGNORE_CASE).findAll(read).count() }
             .filter { it.second > 0 }.sortedByDescending { it.second }
+        val groups = parseGroups(answer)
+        val count = mentions.toMap()
         return buildString {
+            // machine-readable copy for the map's tabs: name | group | about | mentions | other:relation;…
+            append("```people\n")
+            people.forEach { (n, d, _) ->
+                val l = edges.filter { it.from == n || it.to == n }.joinToString(";") { e -> (if (e.from == n) e.to else e.from) + ":" + e.label.replace(";", ",") }
+                append(n).append(" | ").append(groups[n] ?: "").append(" | ").append(d.replace("|", "/")).append(" | ").append(count[n] ?: 0).append(" | ").append(l).append('\n')
+            }
+            append("```\n\n")
             append("## Связи\n\n").append(Rich.graph(edges, names.filter { n -> edges.none { it.from == n || it.to == n } })).append("\n\n")
             append("## Кто есть кто\n\n").append(Rich.table(listOf("Персонаж", "Кто это"), people.map { listOf("**${it.first}**", it.second) })).append('\n')
             if (mentions.size >= 2) append("## Как часто упоминаются\n\n").append(Rich.chart("Упоминаний в прочитанном", mentions)).append('\n')
@@ -180,6 +190,14 @@ class BookAi(private val ai: Ai, private val book: ParsedBook) {
     }
 
     companion object {
+        /** How deep explanations go, from the settings (0 = like for a child … 3 = academic). */
+        fun levelHint(level: Int) = when (level) {
+            0 -> "Объясняй очень просто, как ребёнку: короткие предложения, бытовые примеры, без терминов."
+            2 -> "Объясняй подробно: с контекстом эпохи, мотивами героев и связями между событиями."
+            3 -> "Объясняй академично: литературоведческие понятия, исторический и культурный контекст, интерпретации."
+            else -> "Объясняй простым живым языком."
+        }
+
         /** "Мысль — пояснение" lines into pairs. */
         fun parsePoints(text: String): List<Pair<String, String>> = text.lines()
             .map { it.trim().trimStart('-', '•', '*', ' ').replace(Regex("^\\d+[.)]\\s*"), "") }
@@ -191,7 +209,7 @@ class BookAi(private val ai: Ai, private val book: ParsedBook) {
         fun parseCharacters(text: String): List<Triple<String, String, List<Pair<String, String>>>> = text.lines().mapNotNull { raw ->
             val l = raw.trim().trimStart('-', '•', '*', ' ').replace("**", "")
             val i = l.indexOf(" — ").takeIf { it > 0 } ?: l.indexOf(" - ").takeIf { it > 0 } ?: return@mapNotNull null
-            val name = l.substring(0, i).trim().removeSuffix(":")
+            val name = l.substring(0, i).trim().removeSuffix(":").replace(Regex("\\s*\\[[^]]*]"), "").trim()
             val rest = l.substring(i + 3)
             val j = rest.indexOf("связи:", ignoreCase = true)
             val desc = (if (j >= 0) rest.substring(0, j) else rest).trim().trimEnd(';', ',', '.').trim()
@@ -202,6 +220,13 @@ class BookAi(private val ai: Ai, private val book: ParsedBook) {
             }
             if (name.isEmpty() || name.length > 40) null else Triple(name, desc, links)
         }
+
+        /** "Имя [Семья] — …" → the family/side in brackets, if the model gave one. */
+        fun parseGroups(text: String): Map<String, String> = text.lines().mapNotNull { raw ->
+            val l = raw.trim().trimStart('-', '•', '*', ' ').replace("**", "")
+            val m = Regex("^(.+?)\\s*\\[([^]]+)]").find(l.substringBefore(" — ")) ?: return@mapNotNull null
+            m.groupValues[1].trim() to m.groupValues[2].trim()
+        }.toMap()
 
         /** Crude Russian stem so «Веры», «Вере», «Верой» all match «Вера». */
         fun stem(name: String): String {
