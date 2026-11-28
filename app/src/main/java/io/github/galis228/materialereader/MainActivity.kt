@@ -101,6 +101,7 @@ class MainActivity : ComponentActivity() {
                             id = entry.arguments?.getString("id").orEmpty(), onBack = { nav.popBackStack() },
                             onAppSettings = { nav.navigate("settings") },
                             startAt = if (b >= 0) b to (entry.arguments?.getInt("c") ?: 0) else null,
+                            onOpenBook = { next -> nav.navigate("reader/$next") { popUpTo("reader/{id}?b={b}&c={c}") { inclusive = true } } },
                         )
                     }
                     composable("search") {

@@ -1,5 +1,6 @@
 package io.github.galis228.materialereader.ui
 
+import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -180,6 +181,16 @@ fun LibraryScreen(onOpen: (String) -> Unit, onCatalog: () -> Unit, onSettings: (
             }
         }
     }
+    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { tree ->
+        if (tree == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            importing = true
+            val r = library.importImageFolder(tree)
+            importing = false
+            r.onSuccess { list -> if (list.size == 1) onOpen(list[0].id) else snackbar.showSnackbar("Добавлено глав: ${list.size} — серия «${list[0].series}»") }
+                .onFailure { snackbar.showSnackbar(it.message ?: "Не удалось добавить папку") }
+        }
+    }
     val launchPicker = {
         picker.launch(arrayOf("application/epub+zip", "application/x-fictionbook+xml", "application/x-fb2", "text/plain",
             "application/zip", "application/x-zip-compressed", "application/octet-stream", "text/xml", "application/xml",
@@ -261,7 +272,14 @@ fun LibraryScreen(onOpen: (String) -> Unit, onCatalog: () -> Unit, onSettings: (
             )
         },
         floatingActionButton = {
-            if (!selecting) ExtendedFloatingActionButton(onClick = launchPicker, icon = { Icon(Icons.Rounded.Add, null) }, text = { Text("Добавить") })
+            if (!selecting) Box {
+                var addMenu by remember { mutableStateOf(false) }
+                ExtendedFloatingActionButton(onClick = { addMenu = true }, icon = { Icon(Icons.Rounded.Add, null) }, text = { Text("Добавить") })
+                DropdownMenu(addMenu, { addMenu = false }) {
+                    DropdownMenuItem(text = { Text("Файлы книг и комиксов") }, leadingIcon = { Icon(Icons.Rounded.Add, null) }, onClick = { addMenu = false; launchPicker() })
+                    DropdownMenuItem(text = { Text("Папка с мангой") }, leadingIcon = { Icon(Icons.Rounded.Folder, null) }, onClick = { addMenu = false; folderPicker.launch(null) })
+                }
+            }
         },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { pad ->

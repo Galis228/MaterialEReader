@@ -148,7 +148,7 @@ private sealed interface LoadState {
 }
 
 @Composable
-fun ReaderScreen(id: String, onBack: () -> Unit, onAppSettings: () -> Unit = {}, startAt: Pair<Int, Int>? = null) {
+fun ReaderScreen(id: String, onBack: () -> Unit, onAppSettings: () -> Unit = {}, startAt: Pair<Int, Int>? = null, onOpenBook: (String) -> Unit = {}) {
     val ctx = LocalContext.current
     val library = remember { Library.get(ctx) }
     val repo = remember { SettingsRepo(ctx) }
@@ -164,7 +164,7 @@ fun ReaderScreen(id: String, onBack: () -> Unit, onAppSettings: () -> Unit = {},
     val onSettings: (ReaderSettings) -> Unit = { new -> settingsScope.launch { repo.update(new) } }
 
     if (entry?.isComic == true) {
-        ComicReader(entry, s, colors, onSettings, onBack)
+        ComicReader(entry, s, colors, onSettings, onBack, onOpenBook)
         return
     }
 

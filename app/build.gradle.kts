@@ -88,6 +88,8 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.1.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jsoup:jsoup:1.20.1")
+    implementation("org.apache.commons:commons-compress:1.27.1")
+    implementation("org.tukaani:xz:1.10")
     implementation("com.github.junrar:junrar:7.5.5")
     // ИИ, как в НаноПеро: Gemini Nano (AICore) и модели .litertlm (Gemma 4, Qwen 3); GGUF — через libnanollama.so
     implementation("com.google.mlkit:genai-prompt:1.0.0-beta5")

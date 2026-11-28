@@ -26,6 +26,8 @@ enum class PageAnim(val label: String) {
 }
 
 /** Where the app's colors come from. */
+enum class ComicView(val label: String) { PAGES("Страницы"), PANELS("По кадрам"), WEBTOON("Лента") }
+
 enum class AppColor(val label: String) { WALLPAPER("Из обоев"), COVER("Из обложки книги"), CLASSIC("Зелёная классика") }
 enum class DarkMode(val label: String) { SYSTEM("Как в системе"), LIGHT("Светлая"), DARK("Тёмная") }
 
@@ -45,6 +47,14 @@ data class ReaderSettings(
     val anim: PageAnim = PageAnim.SLIDE,
     val twoPages: Boolean = true,
     val mangaRtl: Boolean = false,
+    /** Comics: whole pages, panel by panel, or one long strip (webtoon). */
+    val comicView: ComicView = ComicView.PAGES,
+    /** Comics: trim white/black margins around the drawing. */
+    val comicCrop: Boolean = false,
+    /** Comics: a bit more contrast for faded scans. */
+    val comicContrast: Boolean = false,
+    /** Comics: open the next volume/chapter of the series at the end. */
+    val comicAutoNext: Boolean = true,
     /** -1 = follow the system. */
     val brightness: Float = -1f,
     val warmth: Float = 0f,
@@ -119,6 +129,10 @@ class SettingsRepo(private val ctx: Context) {
         val anim = stringPreferencesKey("anim")
         val two = booleanPreferencesKey("two_pages")
         val rtl = booleanPreferencesKey("manga_rtl")
+        val comicView = stringPreferencesKey("comic_view")
+        val comicCrop = booleanPreferencesKey("comic_crop")
+        val comicContrast = booleanPreferencesKey("comic_contrast")
+        val comicNext = booleanPreferencesKey("comic_next")
         val bright = floatPreferencesKey("brightness")
         val warm = floatPreferencesKey("warmth")
         val textColor = androidx.datastore.preferences.core.longPreferencesKey("text_color")
@@ -165,6 +179,10 @@ class SettingsRepo(private val ctx: Context) {
             anim = this[K.anim]?.let { if (it == "CURL" || it == "BEND" || it == "FLIP") PageAnim.ROLL else runCatching { PageAnim.valueOf(it) }.getOrNull() } ?: d.anim,
             twoPages = this[K.two] ?: d.twoPages,
             mangaRtl = this[K.rtl] ?: d.mangaRtl,
+            comicView = this[K.comicView]?.let { v -> runCatching { ComicView.valueOf(v) }.getOrNull() } ?: d.comicView,
+            comicCrop = this[K.comicCrop] ?: d.comicCrop,
+            comicContrast = this[K.comicContrast] ?: d.comicContrast,
+            comicAutoNext = this[K.comicNext] ?: d.comicAutoNext,
             brightness = this[K.bright] ?: d.brightness,
             warmth = this[K.warm] ?: d.warmth,
             textColor = this[K.textColor] ?: d.textColor,
@@ -200,6 +218,7 @@ class SettingsRepo(private val ctx: Context) {
             it[K.font] = s.font.name; it[K.theme] = s.theme.name; it[K.justify] = s.justify
             it[K.volume] = s.volumeKeys; it[K.screenOn] = s.keepScreenOn; it[K.tap] = s.tapToTurn
             it[K.mode] = s.mode.name; it[K.anim] = s.anim.name; it[K.two] = s.twoPages; it[K.rtl] = s.mangaRtl
+            it[K.comicView] = s.comicView.name; it[K.comicCrop] = s.comicCrop; it[K.comicContrast] = s.comicContrast; it[K.comicNext] = s.comicAutoNext
             it[K.bright] = s.brightness; it[K.warm] = s.warmth
             it[K.textColor] = s.textColor; it[K.bgColor] = s.bgColor; it[K.simple] = s.simpleMode
             it[K.hyph] = s.hyphenate; it[K.bionic] = s.bionic; it[K.autoNight] = s.autoNight; it[K.oneHand] = s.oneHand

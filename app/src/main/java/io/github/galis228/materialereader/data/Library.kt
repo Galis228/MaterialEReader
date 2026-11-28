@@ -1,5 +1,6 @@
 package io.github.galis228.materialereader.data
 
+import io.github.galis228.materialereader.parse.NaturalOrder
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -121,7 +122,9 @@ class Library private constructor(private val ctx: Context) {
                     ComicArchive.open(file, format).use { comic ->
                         val title = name.substringBeforeLast('.').replace('_', ' ')
                         val hasCover = saveCover(id, comic.page(0))
-                        entry = BookEntry(id, title, "", format, fileName, hasCover, comic.pages.size, 0, sourceUri = sourceUri)
+                        val ser = ComicArchive.seriesOf(title)
+                        entry = BookEntry(id, title, "", format, fileName, hasCover, comic.pages.size, 0, sourceUri = sourceUri,
+                            series = ser?.first ?: "", seriesIndex = ser?.second ?: 0f)
                     }
                 } catch (e: Throwable) { file.delete(); throw e }
             } else {
@@ -140,6 +143,68 @@ class Library private constructor(private val ctx: Context) {
                 save()
             }
             entry
+        }
+    }
+
+    /**
+     * A folder of manga pages: its images become one comic. A folder of chapter folders
+     * becomes a series, one comic per chapter. Returns the added comics.
+     */
+    suspend fun importImageFolder(tree: Uri): Result<List<BookEntry>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cr = ctx.contentResolver
+            fun children(docId: String): List<Triple<String, String, String>> { // id, name, mime
+                val uri = android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(tree, docId)
+                val out = ArrayList<Triple<String, String, String>>()
+                cr.query(uri, arrayOf(android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID, android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE), null, null, null)?.use { c ->
+                    while (c.moveToNext()) out += Triple(c.getString(0), c.getString(1) ?: "", c.getString(2) ?: "")
+                }
+                return out.sortedWith { a, b -> NaturalOrder.compare(a.second, b.second) }
+            }
+            fun pack(docId: String): ByteArray? {
+                val imgs = children(docId).filter { ComicArchive.isImage(it.second) }
+                if (imgs.isEmpty()) return null
+                return ComicArchive.zipImages(imgs.map { (id, name, _) ->
+                    name to (cr.openInputStream(android.provider.DocumentsContract.buildDocumentUriUsingTree(tree, id))?.use { it.readBytes() } ?: ByteArray(0))
+                })
+            }
+            val rootId = android.provider.DocumentsContract.getTreeDocumentId(tree)
+            val rootName = rootId.substringAfterLast(':').substringAfterLast('/').ifEmpty { "Манга" }
+            val added = ArrayList<BookEntry>()
+            pack(rootId)?.let { added += importBytes(it, "$rootName.cbz").getOrThrow() }
+            if (added.isEmpty()) {
+                val dirs = children(rootId).filter { it.third == android.provider.DocumentsContract.Document.MIME_TYPE_DIR }
+                dirs.forEachIndexed { i, (id, name, _) ->
+                    val bytes = pack(id) ?: return@forEachIndexed
+                    val e = importBytes(bytes, "$rootName — $name.cbz").getOrThrow()
+                    setMeta(e.id, "$rootName — $name", "", rootName, (ComicArchive.seriesOf(name)?.second ?: (i + 1).toFloat()))
+                    added += entry(e.id) ?: e
+                }
+            }
+            if (added.isEmpty()) error("В папке нет изображений")
+            added
+        }
+    }
+
+    /** The next volume or chapter of the same series, for reading straight on. */
+    fun nextInSeries(id: String): BookEntry? {
+        val e = entry(id) ?: return null
+        if (e.series.isEmpty()) return null
+        val same = _books.value.filter { it.series.equals(e.series, true) && it.id != id && !it.hidden }
+        return same.filter { it.seriesIndex > e.seriesIndex }.minByOrNull { it.seriesIndex }
+            ?: if (e.seriesIndex == 0f) same.filter { NaturalOrder.compare(it.title, e.title) > 0 }.minWithOrNull { a, b -> NaturalOrder.compare(a.title, b.title) } else null
+    }
+
+    /** A text copy of a PDF (Android 15+ reads the text layer), added to the library as its own book. */
+    suspend fun pdfToText(id: String): Result<BookEntry> = withContext(Dispatchers.IO) {
+        runCatching {
+            val e = entry(id) ?: error("Книга не найдена")
+            val text = io.github.galis228.materialereader.parse.PdfText.extract(bookFile(e))
+            if (text.isBlank()) error("В этом PDF нет текстового слоя — это сканы страниц")
+            val b = importBytes(text.toByteArray(), e.title + ".txt").getOrThrow()
+            setMeta(b.id, e.title, e.author, e.series, e.seriesIndex)
+            entry(b.id) ?: b
         }
     }
 
@@ -328,7 +393,7 @@ class Library private constructor(private val ctx: Context) {
         val e = entry(id) ?: return@withLock
         _books.update { list -> list.filterNot { it.id == id } }
         withContext(Dispatchers.IO) {
-            bookFile(e).delete(); coverFile(id).delete(); save()
+            bookFile(e).delete(); File(dir, ".${e.fileName}.pages").deleteRecursively(); coverFile(id).delete(); save()
             io.github.galis228.materialereader.ai.AiHistory.get(ctx).removeBook(id)
             // remember deleted scanned files so the scanner doesn't bring them back
             e.sourceUri?.let { ignored = ignored + it }

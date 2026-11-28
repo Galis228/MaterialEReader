@@ -29,6 +29,7 @@ class ComicArchive private constructor(
             BookFormat.CBZ -> openZip(file)
             BookFormat.CBR -> openRar(file)
             BookFormat.PDF -> openPdf(file)
+            BookFormat.CB7 -> openSevenZ(file)
             else -> error("Не комикс: $format")
         }
 
@@ -57,6 +58,52 @@ class ComicArchive private constructor(
             }, { pdf.close(); fd.close() })
         }
 
+        /** 7z can't be read at random cheaply, so its images are unpacked once next to the file. */
+        private fun openSevenZ(file: File): ComicArchive {
+            val dir = File(file.parentFile, ".${file.name}.pages")
+            if (!File(dir, ".done").exists()) {
+                dir.deleteRecursively(); dir.mkdirs()
+                val sz = org.apache.commons.compress.archivers.sevenz.SevenZFile.builder().setFile(file).get()
+                sz.use { z ->
+                    var e = z.nextEntry
+                    var n = 0
+                    while (e != null) {
+                        val name = e.name.replace('\\', '/')
+                        if (!e.isDirectory && isImage(name)) {
+                            // keep the order key in the file name, flattened
+                            File(dir, "%05d_".format(n++) + name.replace('/', '_')).outputStream().use { out -> z.getInputStream(e).copyTo(out) }
+                            File(dir, ".names").appendText(name + "\t" + "%05d_".format(n - 1) + name.replace('/', '_') + "\n")
+                        }
+                        e = z.nextEntry
+                    }
+                }
+                File(dir, ".done").writeText("1")
+            }
+            val map = runCatching { File(dir, ".names").readLines().filter { '\t' in it }.associate { it.substringBefore('\t') to it.substringAfter('\t') } }.getOrDefault(emptyMap())
+            if (map.isEmpty()) error("В архиве нет изображений")
+            return ComicArchive(map.keys.sortedWith(NaturalOrder), { n -> File(dir, map.getValue(n)).readBytes() }, {})
+        }
+
+        /** Images (already in order) packed into a plain CBZ, for folders of manga pages. */
+        fun zipImages(images: List<Pair<String, ByteArray>>): ByteArray {
+            val bos = ByteArrayOutputStream()
+            java.util.zip.ZipOutputStream(bos).use { z ->
+                z.setLevel(0)
+                images.forEachIndexed { i, (name, bytes) ->
+                    z.putNextEntry(java.util.zip.ZipEntry("%05d_".format(i) + name.substringAfterLast('/')))
+                    z.write(bytes); z.closeEntry()
+                }
+            }
+            return bos.toByteArray()
+        }
+
+        /** "Berserk Vol. 3", "Наруто — том 12", "One Piece ch 105" → series and number. */
+        fun seriesOf(title: String): Pair<String, Float>? {
+            val m = Regex("^(.*?)[\\s._\\-—,]*(?:vol(?:ume)?|том|t|v|ch(?:apter)?|глава|гл|часть|#)?\\.?\\s*(\\d{1,4}(?:[.,]\\d)?)\\s*(?:\\(.*\\)|\\[.*])?\\s*$", RegexOption.IGNORE_CASE).find(title.trim()) ?: return null
+            val name = m.groupValues[1].trim().trimEnd('-', '—', ',', '.', '_').trim()
+            val n = m.groupValues[2].replace(',', '.').toFloatOrNull() ?: return null
+            return if (name.length >= 2) name to n else null
+        }
         private fun openRar(file: File): ComicArchive {
             val rar = Archive(file)
             if (rar.isEncrypted) { rar.close(); error("Архив защищён паролем") }

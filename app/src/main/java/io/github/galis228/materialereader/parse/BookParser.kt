@@ -9,7 +9,7 @@ object BookParser {
         BookFormat.FB2_ZIP -> Fb2Parser.parseZip(bytes, fileName)
         BookFormat.TXT -> TxtParser.parse(bytes, fileName)
         BookFormat.MOBI -> MobiParser.parse(bytes, fileName)
-        BookFormat.CBZ, BookFormat.CBR, BookFormat.PDF -> error("Страницы-картинки открываются через ComicArchive")
+        BookFormat.CBZ, BookFormat.CBR, BookFormat.PDF, BookFormat.CB7 -> error("Страницы-картинки открываются через ComicArchive")
     }.let { it.copy(blocks = it.blocks.map(::tidy)) } // one-to-one, so chapter indexes stay valid
 
     private val separatorRe = Regex("""[\s*•·⁂❦◆◇~—–\-_=#.§]{1,40}""")
@@ -32,6 +32,7 @@ object BookParser {
         BookFormat.fromName(fileName)?.let { return it }
         if (bytes.size > 4 && bytes[0] == '%'.code.toByte() && bytes[1] == 'P'.code.toByte() && bytes[2] == 'D'.code.toByte() && bytes[3] == 'F'.code.toByte()) return BookFormat.PDF
         if (MobiParser.isMobi(bytes)) return BookFormat.MOBI
+        if (bytes.size > 6 && bytes[0] == '7'.code.toByte() && bytes[1] == 'z'.code.toByte() && bytes[2] == 0xBC.toByte() && bytes[3] == 0xAF.toByte()) return BookFormat.CB7
         if (bytes.size > 4 && bytes[0] == 'R'.code.toByte() && bytes[1] == 'a'.code.toByte() &&
             bytes[2] == 'r'.code.toByte() && bytes[3] == '!'.code.toByte()) return BookFormat.CBR
         if (bytes.size > 4 && bytes[0] == 'P'.code.toByte() && bytes[1] == 'K'.code.toByte()) {
