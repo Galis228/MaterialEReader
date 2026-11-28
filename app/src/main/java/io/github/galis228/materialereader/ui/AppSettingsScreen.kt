@@ -104,6 +104,37 @@ fun AppSettingsScreen(onBack: () -> Unit) {
         }
     }
 
+    var busy by remember { mutableStateOf(false) }
+    var confirmRestore by remember { mutableStateOf<Uri?>(null) }
+    val backupTo = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri: Uri? ->
+        if (uri != null) scope.launch {
+            busy = true
+            val r = runCatching { io.github.galis228.materialereader.data.Backup.export(ctx, uri) }
+            busy = false
+            snackbar.showSnackbar(r.fold({ "Копия сохранена: книг $it" }, { "Не удалось сохранить: ${it.message}" }))
+        }
+    }
+    val restoreFrom = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? -> confirmRestore = uri }
+    confirmRestore?.let { uri ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmRestore = null },
+            title = { Text("Восстановить из копии?") },
+            text = { Text("Библиотека на этом телефоне заменится книгами, закладками, цитатами, карточками слов и статистикой из копии.") },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    confirmRestore = null
+                    scope.launch {
+                        busy = true
+                        val r = runCatching { io.github.galis228.materialereader.data.Backup.restore(ctx, uri) }
+                        busy = false
+                        snackbar.showSnackbar(r.fold({ "Восстановлено книг: $it" }, { it.message ?: "Не удалось восстановить" }))
+                    }
+                }) { Text("Восстановить") }
+            },
+            dismissButton = { androidx.compose.material3.TextButton(onClick = { confirmRestore = null }) { Text("Отмена") } },
+        )
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(title = { Text("Настройки") }, navigationIcon = {
@@ -192,6 +223,25 @@ fun AppSettingsScreen(onBack: () -> Unit) {
             item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
             item { Section("ИИ-помощник") }
             item { AiSettingsBlock() }
+            item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
+
+            item { Section("Резервная копия") }
+            item {
+                ListItem(
+                    headlineContent = { Text("Сохранить копию") },
+                    supportingContent = { Text("Книги, позиции, закладки, цитаты, слова и статистика одним файлом. Можно сохранить на Google Диск — так библиотека переезжает на новый телефон") },
+                    modifier = Modifier.clickable(enabled = !busy) {
+                        backupTo.launch("material-ereader-${java.time.LocalDate.now()}.zip")
+                    },
+                )
+            }
+            item {
+                ListItem(
+                    headlineContent = { Text("Восстановить из копии") },
+                    modifier = Modifier.clickable(enabled = !busy) { restoreFrom.launch(arrayOf("application/zip", "application/octet-stream")) },
+                )
+            }
+            if (busy) item { androidx.compose.material3.LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) }
             item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
 
             item { Section("Обновления") }
@@ -291,6 +341,7 @@ private fun AiSettingsBlock() {
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         if (engine == EngineChoice.API || engine == EngineChoice.AUTO) ApiBlock(ai)
+        ModelDownloadsCard { models = ai.local.models() }
         OutlinedCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -448,6 +499,41 @@ private fun ModelPicker(ai: Ai, provider: ApiProvider, url: String, key: String,
                     onClick = { onPick(m); expanded = false },
                     contentPadding = androidx.compose.material3.ExposedDropdownMenuDefaults.ItemContentPadding,
                 )
+            }
+        }
+    }
+}
+
+/** Download a ready model into the shared folder, with progress, right from the settings. */
+@Composable
+private fun ModelDownloadsCard(onReady: () -> Unit) {
+    val ctx = LocalContext.current
+    var tick by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(1000); tick++ } }
+    OutlinedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Скачать модель", style = MaterialTheme.typography.titleSmall)
+            Text("Файл ляжет в «${io.github.galis228.materialereader.ai.SharedModels.path}» и станет виден другим приложениям. Лучше по Wi-Fi.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            io.github.galis228.materialereader.ai.ModelDownloads.offers.forEach { o ->
+                val st = remember(tick) { io.github.galis228.materialereader.ai.ModelDownloads.state(ctx, o) }
+                LaunchedEffect(st is io.github.galis228.materialereader.ai.ModelDownloads.State.Ready) { if (st is io.github.galis228.materialereader.ai.ModelDownloads.State.Ready) onReady() }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("${o.title} · ${if (o.sizeMb >= 1000) "%.1f ГБ".format(o.sizeMb / 1000f) else "${o.sizeMb} МБ"}", style = MaterialTheme.typography.bodyMedium)
+                        Text(o.note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (st is io.github.galis228.materialereader.ai.ModelDownloads.State.Loading)
+                            androidx.compose.material3.LinearProgressIndicator(progress = { st.fraction }, Modifier.fillMaxWidth().padding(top = 4.dp))
+                    }
+                    when (st) {
+                        is io.github.galis228.materialereader.ai.ModelDownloads.State.Ready -> Text("есть", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+                        is io.github.galis228.materialereader.ai.ModelDownloads.State.Loading ->
+                            TextButton(onClick = { io.github.galis228.materialereader.ai.ModelDownloads.cancel(ctx, o); tick++ }) { Text("Отмена") }
+                        else -> TextButton(onClick = { io.github.galis228.materialereader.ai.ModelDownloads.start(ctx, o); tick++ }) {
+                            Text(if (st is io.github.galis228.materialereader.ai.ModelDownloads.State.Failed) "Повторить" else "Скачать")
+                        }
+                    }
+                }
             }
         }
     }

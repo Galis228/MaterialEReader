@@ -58,6 +58,14 @@ data class BookEntry(
     val readMark: Int = 0,
     /** Bumped on every cover change so cached images refresh. */
     val coverRev: Long = 0L,
+    val shelves: List<String> = emptyList(),
+    val series: String = "",
+    /** Number in the series; 0 = not set. */
+    val seriesIndex: Float = 0f,
+    /** Kept on the hidden shelf, out of the main list. */
+    val hidden: Boolean = false,
+    /** When the book was finished (by progress or by the mark); 0 = not yet. */
+    val finishedAt: Long = 0L,
 ) {
     val started get() = lastOpenedAt > 0L
     val finished get() = when (readMark) { 1 -> true; 2 -> false; else -> progress >= 0.98f }
@@ -149,12 +157,15 @@ class Library private constructor(private val ctx: Context) {
                 if (it.id != id) it else it.copy(
                     position = position, offset = offset, charPos = charPos,
                     progress = if (it.totalBlocks <= 1) 1f else position.toFloat() / (it.totalBlocks - 1),
+                    finishedAt = if (it.finishedAt == 0L && it.totalBlocks > 1 && position.toFloat() / (it.totalBlocks - 1) >= 0.98f) System.currentTimeMillis() else it.finishedAt,
                     lastOpenedAt = System.currentTimeMillis(),
                     readingMillis = it.readingMillis + addMillis,
                 )
             }
         }
         withContext(Dispatchers.IO) { save() }
+        if (addMillis > 0) Stats.get(ctx).addReading(addMillis, entry(id)?.author.orEmpty())
+        ContinueWidget.refresh(ctx)
     }
 
     suspend fun addBookmark(id: String, b: Bookmark) = editBook(id) { it.copy(bookmarks = (it.bookmarks + b).sortedBy { m -> m.block * 1_000_000L + m.charPos }) }
@@ -167,7 +178,20 @@ class Library private constructor(private val ctx: Context) {
 
     suspend fun removeHighlight(id: String, createdAt: Long) = editBook(id) { e -> e.copy(highlights = e.highlights.filterNot { it.createdAt == createdAt }) }
 
-    suspend fun setReadMark(id: String, mark: Int) = editBook(id) { it.copy(readMark = mark) }
+    suspend fun setReadMark(id: String, mark: Int) = editBook(id) {
+        it.copy(readMark = mark, finishedAt = if (mark == 1) (it.finishedAt.takeIf { f -> f > 0 } ?: System.currentTimeMillis()) else if (mark == 2) 0L else it.finishedAt)
+    }
+
+    suspend fun setMeta(id: String, title: String, author: String, series: String, seriesIndex: Float) = editBook(id) {
+        it.copy(title = title.trim().ifEmpty { it.title }, author = author.trim(), series = series.trim(), seriesIndex = seriesIndex)
+    }
+
+    suspend fun setShelves(id: String, shelves: List<String>) = editBook(id) { it.copy(shelves = shelves.map(String::trim).filter(String::isNotEmpty).distinct()) }
+
+    suspend fun setHidden(id: String, hidden: Boolean) = editBook(id) { it.copy(hidden = hidden) }
+
+    /** Re-reads the index after a backup was restored. */
+    suspend fun reload() = mutex.withLock { _books.value = load() }
 
     /** Replaces the cover with an image (any format Android can decode). */
     suspend fun setCover(id: String, bytes: ByteArray): Boolean {
@@ -262,7 +286,7 @@ class Library private constructor(private val ctx: Context) {
             val name = f.name ?: continue
             if (name.startsWith(".")) continue
             if (f.isDirectory) yieldAll(walk(f, depth + 1))
-            else if (BookFormat.fromName(name) != null) yield(f)
+            else if (BookFormat.fromName(name).let { it != null && it != BookFormat.PDF }) yield(f) // PDFs in folders are mostly documents, not books
         }
     }
 
@@ -295,6 +319,8 @@ class Library private constructor(private val ctx: Context) {
             put("added", b.addedAt); put("opened", b.lastOpenedAt); put("millis", b.readingMillis)
             b.sourceUri?.let { put("source", it) }
             put("readMark", b.readMark); put("coverRev", b.coverRev)
+            put("shelves", JSONArray(b.shelves)); put("series", b.series); put("seriesIndex", b.seriesIndex.toDouble())
+            put("hidden", b.hidden); put("finishedAt", b.finishedAt)
             put("highlights", JSONArray().apply {
                 b.highlights.forEach { h -> put(JSONObject().put("block", h.block).put("color", h.color).put("note", h.note).put("created", h.createdAt).put("start", h.start).put("end", h.end)) }
             })
@@ -333,6 +359,9 @@ class Library private constructor(private val ctx: Context) {
                         Highlight(h.getInt("block"), h.optInt("color"), h.optString("note"), h.optLong("created"), h.optInt("start", -1), h.optInt("end", -1))
                     },
                     o.optInt("readMark"), o.optLong("coverRev"),
+                    o.optJSONArray("shelves")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList(),
+                    o.optString("series"), o.optDouble("seriesIndex", 0.0).toFloat(),
+                    o.optBoolean("hidden"), o.optLong("finishedAt"),
                 )
             }.getOrNull()
         }

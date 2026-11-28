@@ -5,15 +5,10 @@ import android.os.Build
 import androidx.compose.animation.core.AnimationVector2D
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.spring
-import androidx.compose.foundation.Canvas
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.RenderEffect
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asComposeRenderEffect
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
-import kotlin.math.PI
-import kotlin.math.acos
 import kotlin.math.min
 import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.tween
@@ -54,24 +49,15 @@ private const val CORNER_TOP = 0
 private const val CORNER_MIDDLE = 1
 private const val CORNER_BOTTOM = 2
 
-/** How the sheet leaves the page. All three bend toward the reader, never into the book. */
-enum class CurlStyle { ROLL, BEND, FLIP }
-
 private val Emphasized = CubicBezierEasing(0.2f, 0f, 0f, 1f)
 
 /**
- * Page turning that bends the sheet outward, toward the reader.
- *
- * The finger position is kept as a point that runs from x = w (page flat) to x = -w (page gone), so all
- * styles share the same gestures and timing:
- *  - ROLL: the right edge rolls up into a tube that travels left;
- *  - BEND: the corner the finger holds lifts in a soft curve, with no crease;
- *  - FLIP: the whole sheet swings away from the left spine in perspective.
- * ROLL and BEND are drawn by an AGSL shader (Android 13+); older systems fall back to a flat fold.
+ * Page turning that rolls the sheet outward, toward the reader: the right edge rolls up into a tube that
+ * travels left and uncovers the next page. The finger position is kept as a point that runs from x = w
+ * (page flat) to x = -w (page gone). Drawn by an AGSL shader (Android 13+); older systems fall back to a flat fold.
  */
 @Composable
 fun CurlPager(
-    style: CurlStyle,
     dark: Boolean,
     count: Int,
     current: Int,
@@ -87,7 +73,6 @@ fun CurlPager(
     var turn by remember { mutableStateOf<Turn?>(null) }
     val cur by rememberUpdatedState(current)
     val cnt by rememberUpdatedState(count)
-    val curlStyle by rememberUpdatedState(style)
     val curl = remember { CurlEffect.createOrNull() }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -125,14 +110,7 @@ fun CurlPager(
                 turn = t
                 scope.launch {
                     val end = if (dir > 0) Offset(-w * 1.15f, h) else Offset(w, h)
-                    if (curlStyle == CurlStyle.BEND) {
-                        // the corner rises a little on its way, like a sheet lifted by the hand
-                        val mid = Offset((start.x + end.x) / 2, h * 0.88f)
-                        t.point.animateTo(mid, tween(300, easing = CubicBezierEasing(0.3f, 0f, 0.6f, 1f)))
-                        t.point.animateTo(end, tween(300, easing = CubicBezierEasing(0.4f, 0f, 0.2f, 1f)))
-                    } else {
-                        t.point.animateTo(end, tween(560, easing = Emphasized))
-                    }
+                    t.point.animateTo(end, tween(560, easing = Emphasized))
                     onCurrentChange((cur + dir).coerceIn(0, cnt - 1))
                     turn = null
                 }
@@ -156,7 +134,7 @@ fun CurlPager(
                             if (forward && cur >= cnt - 1) return@detectDragGestures
                             if (!forward && cur <= 0) return@detectDragGestures
                             val mode = when {
-                                curlStyle != CurlStyle.BEND -> CORNER_MIDDLE
+                                curl != null -> CORNER_MIDDLE // the roll runs straight across; corners matter only for the fold
                                 o.y < h * 0.3f -> CORNER_TOP
                                 o.y > h * 0.62f -> CORNER_BOTTOM
                                 else -> CORNER_MIDDLE
@@ -194,41 +172,7 @@ fun CurlPager(
                 val top = if (t.dir > 0) current else current - 1
                 val under = if (t.dir > 0) current + 1 else current
                 key(under) { Box(Modifier.fillMaxSize()) { page(under) } }
-                if (style == CurlStyle.FLIP) {
-                    // shadow the turning sheet casts on the next page
-                    Canvas(Modifier.fillMaxSize()) {
-                        val e = flipEdge(t.point.value.x, size.width)
-                        val k = 1f - e / size.width
-                        if (k > 0.001f) drawRect(
-                            Brush.horizontalGradient(
-                                0f to Color.Black.copy(alpha = 0.45f * (1f - k * 0.6f)), 1f to Color.Transparent,
-                                startX = e, endX = e + size.width * (0.12f + 0.25f * k),
-                            ),
-                        )
-                    }
-                    key(top) {
-                        Box(
-                            Modifier.fillMaxSize()
-                                .graphicsLayer {
-                                    val e = flipEdge(t.point.value.x, size.width)
-                                    val angle = Math.toDegrees(acos((e / size.width).coerceIn(0f, 1f).toDouble())).toFloat()
-                                    transformOrigin = TransformOrigin(0f, 0.5f)
-                                    rotationY = angle
-                                    cameraDistance = 12f * density
-                                    alpha = if (angle >= 89.5f) 0f else 1f
-                                }
-                                .drawWithContent {
-                                    drawContent()
-                                    val k = 1f - flipEdge(t.point.value.x, size.width) / size.width
-                                    // the sheet turns away from the light as it lifts
-                                    drawRect(Brush.horizontalGradient(
-                                        0f to Color.Black.copy(alpha = 0.05f + 0.30f * k),
-                                        1f to Color.Black.copy(alpha = 0.12f + 0.45f * k),
-                                    ))
-                                },
-                        ) { page(top) }
-                    }
-                } else {
+                run {
                     val layer = rememberGraphicsLayer()
                     key(top) {
                         Box(
@@ -240,22 +184,12 @@ fun CurlPager(
                                 if (shader == null) {
                                     layer.renderEffect = null
                                     drawCurl(layer, p, corner, paper)
-                                } else if (style == CurlStyle.ROLL) {
+                                } else {
                                     val e = flipEdge(p.x, size.width)
                                     val r = min(size.width * 0.085f, (size.width - e) * 0.5f)
                                     val axis = e - r * (1f - e / size.width) // the tube ends exactly off-screen
                                     layer.renderEffect = shader.effect(size, Offset(axis, 0f), Offset(1f, 0f), r, roll = true, paper, dark)
                                     drawLayer(layer)
-                                } else {
-                                    val d = corner - p
-                                    val len = d.getDistance()
-                                    if (len < 1f) { layer.renderEffect = null; drawLayer(layer) } else {
-                                        val n = Offset(d.x / len, d.y / len)
-                                        val r = min(size.width * 0.17f, len * 0.4f)
-                                        val e = (PI.toFloat() * r + len) / 2f // the corner lands under the finger
-                                        layer.renderEffect = shader.effect(size, corner - n * e, n, r, roll = false, paper, dark)
-                                        drawLayer(layer)
-                                    }
                                 }
                             },
                         ) { page(top) }

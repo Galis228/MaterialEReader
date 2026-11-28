@@ -8,7 +8,8 @@ object BookParser {
         BookFormat.FB2 -> Fb2Parser.parse(bytes, fileName)
         BookFormat.FB2_ZIP -> Fb2Parser.parseZip(bytes, fileName)
         BookFormat.TXT -> TxtParser.parse(bytes, fileName)
-        BookFormat.CBZ, BookFormat.CBR -> error("Комикс открывается через ComicArchive")
+        BookFormat.MOBI -> MobiParser.parse(bytes, fileName)
+        BookFormat.CBZ, BookFormat.CBR, BookFormat.PDF -> error("Страницы-картинки открываются через ComicArchive")
     }.let { it.copy(blocks = it.blocks.map(::tidy)) } // one-to-one, so chapter indexes stay valid
 
     private val separatorRe = Regex("""[\s*•·⁂❦◆◇~—–\-_=#.§]{1,40}""")
@@ -29,6 +30,8 @@ object BookParser {
     /** Guesses format by file name, then by content signature. */
     fun detect(bytes: ByteArray, fileName: String): BookFormat? {
         BookFormat.fromName(fileName)?.let { return it }
+        if (bytes.size > 4 && bytes[0] == '%'.code.toByte() && bytes[1] == 'P'.code.toByte() && bytes[2] == 'D'.code.toByte() && bytes[3] == 'F'.code.toByte()) return BookFormat.PDF
+        if (MobiParser.isMobi(bytes)) return BookFormat.MOBI
         if (bytes.size > 4 && bytes[0] == 'R'.code.toByte() && bytes[1] == 'a'.code.toByte() &&
             bytes[2] == 'r'.code.toByte() && bytes[3] == '!'.code.toByte()) return BookFormat.CBR
         if (bytes.size > 4 && bytes[0] == 'P'.code.toByte() && bytes[1] == 'K'.code.toByte()) {

@@ -19,11 +19,13 @@ enum class ReaderFont(val label: String) {
 enum class ReadMode(val label: String) { SCROLL("Прокрутка"), PAGES("Страницы") }
 enum class PageAnim(val label: String) {
     SLIDE("Сдвиг"), COVER("Наложение"), FADE("Затухание"),
-    ROLL("Рулон"), BEND("Мягкий изгиб"), FLIP("Поворот от корешка"),
+    ROLL("Рулон"),
     NONE("Без анимации");
 
-    val isCurl get() = this == ROLL || this == BEND || this == FLIP
+    val isCurl get() = this == ROLL
 }
+
+enum class Ambient(val label: String) { NONE("Тишина"), RAIN("Дождь"), FIRE("Камин"), SEA("Море"), WIND("Ветер") }
 
 data class ReaderSettings(
     val fontSize: Float = 19f,
@@ -46,6 +48,22 @@ data class ReaderSettings(
     val textColor: Long = 0L,
     val bgColor: Long = 0L,
     val simpleMode: Boolean = false,
+    /** Hyphenate long words at line ends. */
+    val hyphenate: Boolean = true,
+    /** Bold first part of every word. */
+    val bionic: Boolean = false,
+    /** Switch to the night theme from 21:00 to 7:00. */
+    val autoNight: Boolean = false,
+    /** A tap anywhere but the left edge turns forward; controls sit at the bottom. */
+    val oneHand: Boolean = false,
+    /** Translation under each paragraph (scroll mode). */
+    val bilingual: Boolean = false,
+    /** Auto-scroll speed, lines per minute. */
+    val autoScrollLpm: Float = 18f,
+    val ambient: Ambient = Ambient.NONE,
+    val ambientVolume: Float = 0.5f,
+    /** Bedtime timer length in minutes. */
+    val bedtimeMinutes: Int = 20,
 )
 
 private val Context.store by preferencesDataStore("reader_settings")
@@ -70,6 +88,15 @@ class SettingsRepo(private val ctx: Context) {
         val textColor = androidx.datastore.preferences.core.longPreferencesKey("text_color")
         val bgColor = androidx.datastore.preferences.core.longPreferencesKey("bg_color")
         val simple = booleanPreferencesKey("simple_mode")
+        val hyph = booleanPreferencesKey("hyphenate")
+        val bionic = booleanPreferencesKey("bionic")
+        val autoNight = booleanPreferencesKey("auto_night")
+        val oneHand = booleanPreferencesKey("one_hand")
+        val bilingual = booleanPreferencesKey("bilingual")
+        val lpm = floatPreferencesKey("autoscroll_lpm")
+        val ambient = stringPreferencesKey("ambient")
+        val ambientVol = floatPreferencesKey("ambient_volume")
+        val bedtime = androidx.datastore.preferences.core.intPreferencesKey("bedtime_min")
     }
 
     val settings: Flow<ReaderSettings> = ctx.store.data.map { p -> p.toSettings() }
@@ -87,7 +114,7 @@ class SettingsRepo(private val ctx: Context) {
             keepScreenOn = this[K.screenOn] ?: d.keepScreenOn,
             tapToTurn = this[K.tap] ?: d.tapToTurn,
             mode = this[K.mode]?.let { runCatching { ReadMode.valueOf(it) }.getOrNull() } ?: d.mode,
-            anim = this[K.anim]?.let { if (it == "CURL") PageAnim.BEND else runCatching { PageAnim.valueOf(it) }.getOrNull() } ?: d.anim,
+            anim = this[K.anim]?.let { if (it == "CURL" || it == "BEND" || it == "FLIP") PageAnim.ROLL else runCatching { PageAnim.valueOf(it) }.getOrNull() } ?: d.anim,
             twoPages = this[K.two] ?: d.twoPages,
             mangaRtl = this[K.rtl] ?: d.mangaRtl,
             brightness = this[K.bright] ?: d.brightness,
@@ -95,6 +122,15 @@ class SettingsRepo(private val ctx: Context) {
             textColor = this[K.textColor] ?: d.textColor,
             bgColor = this[K.bgColor] ?: d.bgColor,
             simpleMode = this[K.simple] ?: d.simpleMode,
+            hyphenate = this[K.hyph] ?: d.hyphenate,
+            bionic = this[K.bionic] ?: d.bionic,
+            autoNight = this[K.autoNight] ?: d.autoNight,
+            oneHand = this[K.oneHand] ?: d.oneHand,
+            bilingual = this[K.bilingual] ?: d.bilingual,
+            autoScrollLpm = this[K.lpm] ?: d.autoScrollLpm,
+            ambient = this[K.ambient]?.let { runCatching { Ambient.valueOf(it) }.getOrNull() } ?: d.ambient,
+            ambientVolume = this[K.ambientVol] ?: d.ambientVolume,
+            bedtimeMinutes = this[K.bedtime] ?: d.bedtimeMinutes,
         )
     }
 
@@ -106,6 +142,9 @@ class SettingsRepo(private val ctx: Context) {
             it[K.mode] = s.mode.name; it[K.anim] = s.anim.name; it[K.two] = s.twoPages; it[K.rtl] = s.mangaRtl
             it[K.bright] = s.brightness; it[K.warm] = s.warmth
             it[K.textColor] = s.textColor; it[K.bgColor] = s.bgColor; it[K.simple] = s.simpleMode
+            it[K.hyph] = s.hyphenate; it[K.bionic] = s.bionic; it[K.autoNight] = s.autoNight; it[K.oneHand] = s.oneHand
+            it[K.bilingual] = s.bilingual; it[K.lpm] = s.autoScrollLpm; it[K.ambient] = s.ambient.name
+            it[K.ambientVol] = s.ambientVolume; it[K.bedtime] = s.bedtimeMinutes
         }
     }
 }

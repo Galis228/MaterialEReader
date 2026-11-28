@@ -39,6 +39,8 @@ object VolumeKeys {
 class MainActivity : ComponentActivity() {
     private var incoming by mutableStateOf<Uri?>(null)
     private var incomingImage by mutableStateOf<Uri?>(null)
+    /** A book to open right away (from the home-screen widget). */
+    private var openBook by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -56,6 +58,11 @@ class MainActivity : ComponentActivity() {
                     if (library.folders.isNotEmpty()) library.scan()
                     update = Updater.autoCheck(this@MainActivity)
                 }
+                LaunchedEffect(openBook) {
+                    val id = openBook ?: return@LaunchedEffect
+                    openBook = null
+                    if (library.entry(id) != null) nav.navigate("reader/$id") { popUpTo("library") }
+                }
                 LaunchedEffect(incoming) {
                     val uri = incoming ?: return@LaunchedEffect
                     incoming = null
@@ -68,8 +75,10 @@ class MainActivity : ComponentActivity() {
                             onCatalog = { nav.navigate("catalog") },
                             onWords = { nav.navigate("words") },
                             onSettings = { nav.navigate("settings") },
+                            onStats = { nav.navigate("stats") },
                         )
                     }
+                    composable("stats") { io.github.galis228.materialereader.ui.StatsScreen(onBack = { nav.popBackStack() }) }
                     composable("reader/{id}") { entry ->
                         ReaderScreen(
                             id = entry.arguments?.getString("id").orEmpty(), onBack = { nav.popBackStack() },
@@ -124,6 +133,7 @@ class MainActivity : ComponentActivity() {
 
     /** Books go to the library; a shared picture becomes a cover. */
     private fun route(i: Intent?) {
+        i?.getStringExtra(io.github.galis228.materialereader.data.ContinueWidget.EXTRA_BOOK)?.let { openBook = it; i.removeExtra(io.github.galis228.materialereader.data.ContinueWidget.EXTRA_BOOK); return }
         val uri = incomingUri(i) ?: return
         val type = i?.type ?: contentResolver.getType(uri)
         if (type?.startsWith("image/") == true) incomingImage = uri else incoming = uri

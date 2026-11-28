@@ -22,6 +22,9 @@ class Words private constructor(ctx: Context) {
     private val _all = MutableStateFlow(load())
     val all: StateFlow<List<Word>> = _all.asStateFlow()
 
+    /** After restoring a backup. */
+    fun reload() { _all.value = load() }
+
     fun dueNow(now: Long = System.currentTimeMillis()) = _all.value.filter { it.due <= now }
 
     suspend fun add(w: Word) = edit { list -> listOf(w.copy(due = System.currentTimeMillis())) + list.filterNot { it.word.equals(w.word, true) && it.book == w.book } }

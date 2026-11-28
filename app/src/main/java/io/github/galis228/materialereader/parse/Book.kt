@@ -63,9 +63,10 @@ data class ParsedBook(
 }
 
 enum class BookFormat(val ext: String) {
-    EPUB("epub"), FB2("fb2"), FB2_ZIP("fb2.zip"), TXT("txt"), CBZ("cbz"), CBR("cbr");
+    EPUB("epub"), FB2("fb2"), FB2_ZIP("fb2.zip"), TXT("txt"), CBZ("cbz"), CBR("cbr"), MOBI("mobi"), PDF("pdf");
 
-    val isComic get() = this == CBZ || this == CBR
+    /** Shown as page images (comics and PDF). */
+    val isComic get() = this == CBZ || this == CBR || this == PDF
 
     companion object {
         fun fromName(name: String): BookFormat? {
@@ -77,6 +78,8 @@ enum class BookFormat(val ext: String) {
                 n.endsWith(".txt") -> TXT
                 n.endsWith(".cbz") -> CBZ
                 n.endsWith(".cbr") -> CBR
+                n.endsWith(".mobi") || n.endsWith(".azw") || n.endsWith(".prc") -> MOBI
+                n.endsWith(".pdf") -> PDF
                 else -> null
             }
         }

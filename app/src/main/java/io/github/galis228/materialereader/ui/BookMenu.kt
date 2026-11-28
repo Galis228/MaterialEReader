@@ -1,5 +1,13 @@
 package io.github.galis228.materialereader.ui
 
+import androidx.compose.runtime.collectAsState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.VisibilityOff
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.Edit
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -86,7 +94,9 @@ fun BookMenuSheet(book: BookEntry, onOpen: () -> Unit, onDelete: () -> Unit, onD
     val scope = rememberCoroutineScope()
     val library = Library.get(LocalContext.current)
     var covers by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf(false) }
     if (covers) { CoverSheet(book) { covers = false; onDismiss() }; return }
+    if (editing) { EditBookDialog(book) { editing = false; onDismiss() }; return }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.navigationBarsPadding().padding(bottom = 8.dp)) {
@@ -105,6 +115,13 @@ fun BookMenuSheet(book: BookEntry, onOpen: () -> Unit, onDelete: () -> Unit, onD
             else ListItem({ Text("Отметить как прочитанную") },
                 Modifier.clickable { scope.launch { library.setReadMark(book.id, 1) }; onDismiss() },
                 leadingContent = { Icon(Icons.Rounded.CheckCircle, null) }, colors = colors)
+            ListItem({ Text("Название, автор, серия, полки") }, Modifier.clickable { editing = true },
+                leadingContent = { Icon(Icons.Rounded.Edit, null) }, colors = colors)
+            if (book.hidden) ListItem({ Text("Вернуть из скрытых") }, Modifier.clickable { scope.launch { library.setHidden(book.id, false) }; onDismiss() },
+                leadingContent = { Icon(Icons.Rounded.Visibility, null) }, colors = colors)
+            else ListItem({ Text("Скрыть") }, Modifier.clickable { scope.launch { library.setHidden(book.id, true) }; onDismiss() },
+                supportingContent = { Text("Книга уйдёт на полку «Скрытые»") },
+                leadingContent = { Icon(Icons.Rounded.VisibilityOff, null) }, colors = colors)
             ListItem({ Text("Сменить обложку") }, Modifier.clickable { covers = true }, leadingContent = { Icon(Icons.Rounded.Image, null) }, colors = colors)
             ListItem({ Text("Удалить", color = MaterialTheme.colorScheme.error) }, Modifier.clickable { onDismiss(); onDelete() },
                 leadingContent = { Icon(Icons.Rounded.Delete, null, tint = MaterialTheme.colorScheme.error) }, colors = colors)
@@ -326,4 +343,58 @@ fun TitleTile(title: String, author: String, modifier: Modifier) {
         Text(title, color = androidx.compose.ui.graphics.Color.White, style = MaterialTheme.typography.labelSmall,
             fontFamily = androidx.compose.ui.text.font.FontFamily.Serif, maxLines = 5, overflow = TextOverflow.Ellipsis)
     }
+}
+
+/** Fix a book's title and author, put it in a series and on shelves. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun EditBookDialog(book: BookEntry, onDone: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val library = Library.get(LocalContext.current)
+    val allShelves = library.books.collectAsState().value.flatMap { it.shelves }.distinct().sorted()
+    var title by remember { mutableStateOf(book.title) }
+    var author by remember { mutableStateOf(book.author) }
+    var series by remember { mutableStateOf(book.series) }
+    var index by remember { mutableStateOf(if (book.seriesIndex > 0f) book.seriesIndex.toString().removeSuffix(".0") else "") }
+    var shelves by remember { mutableStateOf(book.shelves.toSet()) }
+    var newShelf by remember { mutableStateOf("") }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDone,
+        title = { Text("О книге") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(title, { title = it }, label = { Text("Название") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(author, { author = it }, label = { Text("Автор") }, modifier = Modifier.fillMaxWidth())
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(series, { series = it }, label = { Text("Серия") }, singleLine = true, modifier = Modifier.weight(1f))
+                    OutlinedTextField(index, { index = it.filter { c -> c.isDigit() || c == '.' || c == ',' }.take(5) }, label = { Text("№") }, singleLine = true,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
+                        modifier = Modifier.width(76.dp))
+                }
+                Text("Полки", style = MaterialTheme.typography.titleSmall)
+                androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    (allShelves + shelves).distinct().forEach { sh ->
+                        androidx.compose.material3.FilterChip(selected = sh in shelves, onClick = { shelves = if (sh in shelves) shelves - sh else shelves + sh }, label = { Text(sh) })
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(newShelf, { newShelf = it }, label = { Text("Новая полка") }, singleLine = true, modifier = Modifier.weight(1f))
+                    androidx.compose.material3.IconButton(onClick = { if (newShelf.isNotBlank()) { shelves = shelves + newShelf.trim(); newShelf = "" } }) {
+                        Icon(Icons.Rounded.Add, "Добавить полку")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = {
+                scope.launch {
+                    val all = if (newShelf.isNotBlank()) shelves + newShelf.trim() else shelves
+                    library.setMeta(book.id, title, author, series, index.replace(',', '.').toFloatOrNull() ?: 0f)
+                    library.setShelves(book.id, all.toList())
+                    onDone()
+                }
+            }) { Text("Сохранить") }
+        },
+        dismissButton = { androidx.compose.material3.TextButton(onClick = onDone) { Text("Отмена") } },
+    )
 }

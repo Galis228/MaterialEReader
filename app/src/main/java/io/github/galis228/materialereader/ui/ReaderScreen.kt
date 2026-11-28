@@ -50,6 +50,8 @@ import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.TextFields
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -82,6 +84,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -111,6 +115,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import io.github.galis228.materialereader.VolumeKeys
 import io.github.galis228.materialereader.data.Bookmark
 import io.github.galis228.materialereader.data.Library
+import io.github.galis228.materialereader.data.AmbientSound
 import io.github.galis228.materialereader.data.PageAnim
 import io.github.galis228.materialereader.data.ReadMode
 import io.github.galis228.materialereader.data.ReaderSettings
@@ -146,7 +151,10 @@ fun ReaderScreen(id: String, onBack: () -> Unit, onAppSettings: () -> Unit = {})
     val entry = remember(id) { library.entry(id) }
     val settingsScope = rememberCoroutineScope()
     val s = settings ?: run { Box(Modifier.fillMaxSize()); return }
-    val colors = pageColors(s, MaterialTheme.colorScheme)
+    // Night theme by the clock: re-checked every minute while reading
+    val nightNow by produceState(isNightHour()) { while (true) { kotlinx.coroutines.delay(60_000); value = isNightHour() } }
+    val shown = if (s.autoNight && nightNow) s.copy(theme = io.github.galis228.materialereader.data.ReaderTheme.NIGHT, textColor = 0L, bgColor = 0L) else s
+    val colors = pageColors(shown, MaterialTheme.colorScheme)
     val onSettings: (ReaderSettings) -> Unit = { new -> settingsScope.launch { repo.update(new) } }
 
     if (entry?.isComic == true) {
@@ -189,6 +197,13 @@ class ReaderController {
     var visibleText: () -> String = { "" }
     /** Pages left until the next chapter (page mode only). */
     var pagesToChapter by mutableStateOf<Int?>(null)
+    /** Auto-scroll running (scroll mode). */
+    var autoScroll by mutableStateOf(false)
+}
+
+private fun isNightHour(): Boolean {
+    val h = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+    return h >= 21 || h < 7
 }
 
 @OptIn(FlowPreview::class)
@@ -206,6 +221,26 @@ private fun BookReader(
     var paragraph by remember { mutableIntStateOf(0) }
     var aiPreset by remember { mutableStateOf<String?>(null) }
     var searchQuery by remember { mutableStateOf("") }
+    // Background sound lives as long as the book is open
+    DisposableEffect(settings.ambient) {
+        AmbientSound.play(settings.ambient, settings.ambientVolume)
+        onDispose { AmbientSound.stop() }
+    }
+    LaunchedEffect(settings.ambientVolume) { AmbientSound.setVolume(settings.ambientVolume) }
+    // Bedtime: the screen warms up and dims over the timer, then the position is saved and the page goes dark
+    var bedtimeEnd by remember { mutableStateOf<Long?>(null) }
+    var bedtimeLeft by remember { mutableFloatStateOf(1f) } // 1 = just started, 0 = time is up
+    LaunchedEffect(bedtimeEnd) {
+        val end = bedtimeEnd ?: return@LaunchedEffect
+        val total = (end - System.currentTimeMillis()).coerceAtLeast(1L).toFloat()
+        while (true) {
+            val left = end - System.currentTimeMillis()
+            bedtimeLeft = (left / total).coerceIn(0f, 1f)
+            if (left <= 0) break
+            kotlinx.coroutines.delay(2_000)
+        }
+        AmbientSound.stop()
+    }
     val books by library.books.collectAsState()
     val bookmarks = books.firstOrNull { it.id == id }?.bookmarks.orEmpty()
 
@@ -214,7 +249,7 @@ private fun BookReader(
     }
     val chapterIndex by remember(book) { derivedStateOf { book.chapters.indexOfLast { it.startBlock <= ctl.block }.coerceAtLeast(0) } }
 
-    SystemBars(uiVisible, colors.isDark, settings.keepScreenOn)
+    SystemBars(uiVisible, colors.isDark, settings.keepScreenOn && !(bedtimeEnd != null && bedtimeLeft <= 0f))
 
     // Personal reading speed: each step forward = words read / time spent on them
     val appCtx = LocalContext.current.applicationContext
@@ -229,6 +264,7 @@ private fun BookReader(
             val now = System.currentTimeMillis()
             // in scroll mode small steps accumulate until there is a page's worth of words
             if (lastWords >= 0 && words > lastWords && words - lastWords < 15 && now - lastTime < 4 * 60_000L) return@collect
+            if (lastWords >= 0 && words > lastWords && words - lastWords < 3000) io.github.galis228.materialereader.data.Stats.get(appCtx).addWords(words - lastWords)
             if (lastWords >= 0 && words > lastWords && !uiVisible && sheet == null) {
                 if (ReadingSpeed.record(appCtx, words - lastWords, now - lastTime)) {
                     wpm = ReadingSpeed.wpm(appCtx); calibrated = ReadingSpeed.calibrated(appCtx)
@@ -270,6 +306,11 @@ private fun BookReader(
 
     val onTap: (Float) -> Unit = { x ->
         when {
+            ctl.autoScroll -> ctl.autoScroll = false
+            settings.oneHand && uiVisible -> uiVisible = false
+            settings.oneHand && x < 0.22f -> ctl.turn(-1)
+            settings.oneHand && x < 0.45f -> uiVisible = true
+            settings.oneHand -> ctl.turn(1)
             uiVisible -> uiVisible = false
             settings.tapToTurn && x < (if (settings.simpleMode) 0.35f else 0.28f) -> ctl.turn(-1)
             settings.tapToTurn && x > (if (settings.simpleMode) 0.65f else 0.72f) -> ctl.turn(1)
@@ -326,13 +367,33 @@ private fun BookReader(
 
     Box(Modifier.fillMaxSize().background(colors.bg)) {
         CompositionLocalProvider(LocalBlockHits provides hits, LocalHighlights provides hlMap, LocalPageDark provides colors.isDark,
-            LocalPageAccent provides colors.accent, LocalTapAt provides tapAt) {
+            LocalPageAccent provides colors.accent, LocalTapAt provides tapAt, LocalBionic provides settings.bionic) {
             when (settings.mode) {
                 ReadMode.SCROLL -> ScrollContent(book, settings, colors, ctl, startOffset, onTap, onLongPress) { scrollOffset = it }
                 ReadMode.PAGES -> PagedContent(book, settings, colors, ctl, onTap, onLongPress)
             }
         }
         if (settings.warmth > 0.01f) Box(Modifier.fillMaxSize().background(Color(0xFFFF8F00).copy(alpha = settings.warmth * 0.28f)))
+        if (bedtimeEnd != null) {
+            val k = 1f - bedtimeLeft
+            Box(Modifier.fillMaxSize().background(Color(0xFFFF8F00).copy(alpha = 0.10f + 0.18f * k)))
+            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = (k * k * 0.85f).coerceAtMost(0.85f))))
+            if (bedtimeLeft <= 0f) Box(
+                Modifier.fillMaxSize().background(Color.Black).pointerInput(Unit) { detectTapGestures { bedtimeEnd = null } },
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Спокойной ночи", color = Color(0xFF6E6A62), fontSize = 20.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Text("Место в книге сохранено. Коснись, чтобы читать дальше", color = Color(0xFF4A4740), fontSize = 13.sp)
+                }
+            }
+        }
+        if (ctl.autoScroll) androidx.compose.material3.Surface(
+            onClick = { ctl.autoScroll = false },
+            shape = RoundedCornerShape(24.dp), color = colors.panel, contentColor = colors.text, shadowElevation = 4.dp,
+            modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(16.dp),
+        ) { Text("❚❚  Автопрокрутка", Modifier.padding(horizontal = 14.dp, vertical = 8.dp), fontSize = 13.sp) }
         returnTo?.let { (rb, rc) ->
             androidx.compose.material3.Surface(
                 onClick = { returnTo = null; ctl.jumpTo(rb, rc) },
@@ -392,6 +453,12 @@ private fun BookReader(
                 onText = { sheet = Sheet.TEXT; uiVisible = false }, onToc = { sheet = Sheet.TOC },
                 onAi = { aiPreset = null; sheet = Sheet.AI },
                 simple = settings.simpleMode,
+                bedtimeOn = bedtimeEnd != null,
+                onBedtime = {
+                    uiVisible = false
+                    bedtimeEnd = if (bedtimeEnd != null) null else System.currentTimeMillis() + settings.bedtimeMinutes * 60_000L
+                },
+                onAutoScroll = if (settings.mode == ReadMode.SCROLL) ({ uiVisible = false; ctl.autoScroll = true }) else null,
                 onFont = { d -> onSettings(settings.copy(fontSize = (settings.fontSize + d).coerceIn(14f, 40f))) },
                 onToggleNight = { onSettings(settings.copy(theme = if (colors.isDark) ReaderTheme.PAPER else ReaderTheme.NIGHT)) },
             )
@@ -422,6 +489,10 @@ private fun BookReader(
             book, ctl.block, book.chapters.getOrNull(chapterIndex)?.startBlock ?: 0,
             pageText = { aiPreset ?: ctl.visibleText() }, preset = aiPreset,
             onOpenSettings = { sheet = null; onAppSettings() },
+            onJournal = { q, ans ->
+                // a journal entry is a note on the current paragraph that colors no text (empty range)
+                scope.launch { library.putHighlight(id, io.github.galis228.materialereader.data.Highlight(ctl.block, 0, "📓 $q\n$ans", System.currentTimeMillis(), 0, 0)) }
+            },
         ) { sheet = null }
         null -> {}
     }
@@ -487,6 +558,25 @@ private fun ScrollContent(
 
     val specs = rememberSpecs(s, c)
     val bars = WindowInsets.systemBarsIgnoringVisibility.asPaddingValues()
+    // Auto-scroll: a steady glide at the chosen lines per minute, one frame at a time
+    LaunchedEffect(ctl.autoScroll, s.autoScrollLpm, s.fontSize, s.lineHeight) {
+        if (!ctl.autoScroll) return@LaunchedEffect
+        val linePx = with(density) { (s.fontSize * s.lineHeight).sp.toPx() }
+        val pxPerSec = linePx * s.autoScrollLpm / 60f
+        var last = 0L
+        var carry = 0f
+        while (ctl.autoScroll) {
+            androidx.compose.runtime.withFrameNanos { now ->
+                if (last != 0L) carry += pxPerSec * (now - last) / 1e9f
+                last = now
+            }
+            if (carry >= 1f) {
+                val step = carry.toInt().toFloat(); carry -= step
+                if (list.scrollBy(step) < step * 0.5f) ctl.autoScroll = false // reached the end
+            }
+        }
+    }
+    val bilingual = s.bilingual
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val w = constraints.maxWidth.toFloat()
         LazyColumn(
@@ -500,6 +590,8 @@ private fun ScrollContent(
             itemsIndexed(book.blocks, contentType = { _, b -> b.kind }) { i, b ->
                 val spec = specs.getValue(b.kind)
                 SliceText(b, i, spec, first = i == 0)
+                if (bilingual && (b.kind == Block.Kind.PARAGRAPH || b.kind == Block.Kind.QUOTE) && b.text.length > 1)
+                    TranslationLine(b.text, spec, c)
             }
         }
     }
@@ -508,7 +600,7 @@ private fun ScrollContent(
 @Composable
 private fun rememberSpecs(s: ReaderSettings, c: PageColors): Map<Block.Kind, BlockSpec> {
     val density = LocalDensity.current
-    return remember(s.fontSize, s.lineHeight, s.font.family(), s.justify, c, density) {
+    return remember(s.fontSize, s.lineHeight, s.font.family(), s.justify, s.hyphenate, c, density) {
         Block.Kind.entries.associateWith { blockSpec(it, s, c.text, c.muted, density) }
     }
 }
@@ -523,7 +615,8 @@ private fun SliceText(block: Block, index: Int, spec: BlockSpec, first: Boolean)
     val token = remember { Any() }
     var layout by remember { mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null) }
     if (hits != null) DisposableEffect(token) { onDispose { hits.remove(token) } }
-    val text = remember(block, hls, accent, dark) { styledSlice(block, 0, block.text.length, accent, hls, dark) }
+    val bionic = LocalBionic.current
+    val text = remember(block, hls, accent, dark, bionic) { styledSlice(block, 0, block.text.length, accent, hls, dark, bionic) }
     with(d) {
         Text(
             text, style = spec.forSlice(0), onTextLayout = { layout = it },
@@ -539,7 +632,7 @@ private fun SliceText(block: Block, index: Int, spec: BlockSpec, first: Boolean)
 
 // ---------------- Page mode ----------------
 
-private data class PageKey(val w: Int, val h: Int, val size: Float, val line: Float, val font: Any, val justify: Boolean)
+private data class PageKey(val w: Int, val h: Int, val size: Float, val line: Float, val font: Any, val justify: Boolean, val hyph: Boolean, val bionic: Boolean)
 
 /** Last pagination, so reopening the same book with the same layout is instant. */
 private object PageCache {
@@ -568,14 +661,14 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
         val colH = maxHeight - topPad - bottomPad
         val wPx = with(density) { colW.roundToPx() }
         val hPx = with(density) { colH.roundToPx() }
-        val key = PageKey(wPx, hPx, s.fontSize, s.lineHeight, s.font.family(), s.justify)
+        val key = PageKey(wPx, hPx, s.fontSize, s.lineHeight, s.font.family(), s.justify, s.hyphenate, s.bionic)
 
         var progress by remember { mutableFloatStateOf(0f) }
         val pages by produceState<List<Page>?>(PageCache.pages.takeIf { PageCache.key == book to key }, book, key) {
             if (PageCache.key == book to key) { value = PageCache.pages; return@produceState }
             value = null
             val measurer = TextMeasurer(fontResolver, density, layoutDir, cacheSize = 0)
-            val paginator = Paginator(measurer, specs, wPx, hPx)
+            val paginator = Paginator(measurer, specs, wPx, hPx, s.bionic)
             // The current chapter first, so the text shows up (and settings changes preview) right away
             val ch = book.chapters.indexOfLast { it.startBlock <= ctl.block }.coerceAtLeast(0)
             val from = book.chapters.getOrNull(ch)?.startBlock ?: 0
@@ -659,7 +752,6 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
         if (s.anim.isCurl) {
             ctl.turn = { dir -> curlTurn(dir) }
             CurlPager(
-                style = when (s.anim) { PageAnim.ROLL -> CurlStyle.ROLL; PageAnim.FLIP -> CurlStyle.FLIP; else -> CurlStyle.BEND },
                 dark = c.isDark,
                 count = spreads, current = spread, onCurrentChange = { spread = it },
                 paper = lerpColor(c.bg, if (c.isDark) Color.White else Color.Black, 0.04f),
@@ -701,13 +793,14 @@ private fun PageView(page: Page, book: ParsedBook, specs: Map<Block.Kind, BlockS
     val accent = LocalPageAccent.current
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val width = constraints.maxWidth
-        val placed = remember(page, specs, width, measurer, highlights, accent, dark) {
+        val bionic = LocalBionic.current
+        val placed = remember(page, specs, width, measurer, highlights, accent, dark, bionic) {
             var y = 0f
             page.slices.mapIndexed { k, sl ->
                 val b = book.blocks[sl.block]
                 val spec = specs.getValue(b.kind)
                 val w = (width - spec.padStart - spec.padEnd).toInt().coerceAtLeast(1)
-                val layout = measurer.measure(styledSlice(b, sl.start, sl.end, accent, highlights[sl.block].orEmpty(), dark),
+                val layout = measurer.measure(styledSlice(b, sl.start, sl.end, accent, highlights[sl.block].orEmpty(), dark, bionic),
                     spec.forSlice(sl.start), constraints = Constraints.fixedWidth(w), skipCache = true)
                 val top = y + spec.topOnPage(k == 0)
                 y = top + layout.size.height + spec.bottom
@@ -803,6 +896,7 @@ private fun BottomPanel(
     book: ParsedBook, ctl: ReaderController, c: PageColors, minutesLeft: Int, personal: Boolean,
     onText: () -> Unit, onToc: () -> Unit, onToggleNight: () -> Unit, onAi: () -> Unit,
     simple: Boolean = false, onFont: (Float) -> Unit = {},
+    bedtimeOn: Boolean = false, onBedtime: () -> Unit = {}, onAutoScroll: (() -> Unit)? = null,
 ) {
     var dragging by remember { mutableStateOf(false) }
     var dragValue by remember { mutableFloatStateOf(0f) }
@@ -847,6 +941,8 @@ private fun BottomPanel(
             PanelButton("Текст", c, onText) { Icon(Icons.Rounded.TextFields, null) }
             PanelButton("Главы", c, onToc) { Icon(Icons.AutoMirrored.Rounded.FormatListBulleted, null) }
             PanelButton("ИИ", c, onAi) { Icon(Icons.Rounded.AutoAwesome, null) }
+            onAutoScroll?.let { PanelButton("Авто", c, it) { Icon(Icons.Rounded.PlayArrow, null) } }
+            PanelButton(if (bedtimeOn) "Не спать" else "Сон", c, onBedtime) { Icon(Icons.Rounded.Bedtime, null, tint = if (bedtimeOn) c.accent else c.text) }
             PanelButton(if (c.isDark) "Светлая" else "Ночь", c, onToggleNight) {
                 Icon(if (c.isDark) Icons.Rounded.LightMode else Icons.Rounded.DarkMode, null)
             }
@@ -867,3 +963,28 @@ fun PanelButton(label: String, c: PageColors, onClick: () -> Unit, icon: @Compos
     }
 }
 
+
+/** Session cache of paragraph translations for the bilingual mode. */
+private val translationCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+@Composable
+private fun TranslationLine(text: String, spec: BlockSpec, c: PageColors) {
+    val ctx = LocalContext.current
+    val d = LocalDensity.current
+    val tr by produceState(translationCache[text], text) {
+        if (value != null) return@produceState
+        value = runCatching {
+            val src = io.github.galis228.materialereader.data.Translate.detect(text)
+            io.github.galis228.materialereader.data.Translate.translate(ctx, text, src).text
+        }.getOrNull()?.takeIf { it.isNotBlank() && it.trim() != text.trim() }?.also { translationCache[text] = it }
+    }
+    val t = tr ?: return
+    with(d) {
+        Text(
+            t, style = spec.style.copy(color = c.muted, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                fontSize = spec.style.fontSize * 0.9f, textIndent = null),
+            modifier = Modifier.fillMaxWidth().padding(start = spec.padStart.toDp() + 12.dp, bottom = spec.bottom.toDp() + 4.dp)
+                .drawBehind { drawLine(c.accent.copy(alpha = 0.4f), Offset(-8.dp.toPx(), 0f), Offset(-8.dp.toPx(), size.height), 2.dp.toPx()) },
+        )
+    }
+}

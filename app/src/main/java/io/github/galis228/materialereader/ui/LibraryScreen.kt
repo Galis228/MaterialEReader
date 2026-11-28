@@ -28,6 +28,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.VisibilityOff
+import androidx.compose.material.icons.rounded.Label
+import androidx.compose.material.icons.rounded.Insights
 import androidx.compose.material.icons.rounded.School
 import androidx.compose.material.icons.rounded.TravelExplore
 import androidx.compose.material3.IconButton
@@ -59,6 +62,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.clickable
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -76,7 +80,7 @@ private const val WPM = 200
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun LibraryScreen(onOpen: (String) -> Unit, onCatalog: () -> Unit, onSettings: () -> Unit, onWords: () -> Unit = {}) {
+fun LibraryScreen(onOpen: (String) -> Unit, onCatalog: () -> Unit, onSettings: () -> Unit, onWords: () -> Unit = {}, onStats: () -> Unit = {}) {
     val ctx = LocalContext.current
     val library = remember { Library.get(ctx) }
     val books by library.books.collectAsState()
@@ -85,6 +89,8 @@ fun LibraryScreen(onOpen: (String) -> Unit, onCatalog: () -> Unit, onSettings: (
     var importing by remember { mutableStateOf(false) }
     val scanning by library.scanning.collectAsState()
     var filter by rememberSaveable { mutableStateOf(Filter.ALL) }
+    /** A shelf picked instead of a filter; HIDDEN_SHELF = the hidden shelf. */
+    var shelf by rememberSaveable { mutableStateOf<String?>(null) }
     var toDelete by remember { mutableStateOf<BookEntry?>(null) }
     var menuFor by remember { mutableStateOf<BookEntry?>(null) }
     val simple = remember { io.github.galis228.materialereader.data.SettingsRepo(ctx) }.settings.collectAsState(initial = null).value?.simpleMode == true
@@ -98,7 +104,7 @@ fun LibraryScreen(onOpen: (String) -> Unit, onCatalog: () -> Unit, onSettings: (
             for (u in uris) library.import(u).onSuccess { last = it }.onFailure { failed++ }
             importing = false
             when {
-                failed > 0 -> snackbar.showSnackbar(if (uris.size == 1) "Не получилось открыть файл. Поддерживаются EPUB, FB2 и TXT."
+                failed > 0 -> snackbar.showSnackbar(if (uris.size == 1) "Не получилось открыть файл. Поддерживаются EPUB, FB2, MOBI, PDF, TXT и комиксы CBZ/CBR."
                     else "Не удалось добавить книг: $failed")
                 uris.size == 1 && last != null -> onOpen(last!!.id)
             }
@@ -107,17 +113,25 @@ fun LibraryScreen(onOpen: (String) -> Unit, onCatalog: () -> Unit, onSettings: (
     val launchPicker = {
         picker.launch(arrayOf("application/epub+zip", "application/x-fictionbook+xml", "application/x-fb2", "text/plain",
             "application/zip", "application/x-zip-compressed", "application/octet-stream", "text/xml", "application/xml",
-            "application/vnd.comicbook+zip", "application/vnd.comicbook-rar", "application/x-cbz", "application/x-cbr", "application/x-rar-compressed"))
+            "application/vnd.comicbook+zip", "application/vnd.comicbook-rar", "application/x-cbz", "application/x-cbr", "application/x-rar-compressed",
+            "application/pdf", "application/x-mobipocket-ebook", "application/vnd.amazon.ebook"))
     }
 
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
-    val current = books.filter { it.started && !it.finished }.maxByOrNull { it.lastOpenedAt }
-    val shown = when (filter) {
-        Filter.ALL -> books
-        Filter.READING -> books.filter { it.started && !it.finished }
-        Filter.NEW -> books.filter { !it.started }
-        Filter.DONE -> books.filter { it.finished }
-    }.sortedByDescending { maxOf(it.lastOpenedAt, it.addedAt) }
+    val visible = books.filterNot { it.hidden }
+    val current = visible.filter { it.started && !it.finished }.maxByOrNull { it.lastOpenedAt }
+    val shelves = visible.flatMap { it.shelves }.distinct().sorted()
+    val hasHidden = books.any { it.hidden }
+    val shown = when (val sh = shelf) {
+        HIDDEN_SHELF -> books.filter { it.hidden }
+        null -> when (filter) {
+            Filter.ALL -> visible
+            Filter.READING -> visible.filter { it.started && !it.finished }
+            Filter.NEW -> visible.filter { !it.started }
+            Filter.DONE -> visible.filter { it.finished }
+        }
+        else -> visible.filter { sh in it.shelves }
+    }.sortedByDescending { maxOf(it.lastOpenedAt, it.addedAt) }.let(::groupSeries)
 
     Scaffold(
         modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
@@ -126,6 +140,7 @@ fun LibraryScreen(onOpen: (String) -> Unit, onCatalog: () -> Unit, onSettings: (
                 title = { Text("Библиотека") }, scrollBehavior = scroll,
                 actions = {
                     IconButton(onClick = onCatalog) { Icon(Icons.Rounded.TravelExplore, "Каталоги книг") }
+                    if (!simple) IconButton(onClick = onStats) { Icon(Icons.Rounded.Insights, "Статистика") }
                     if (!simple) IconButton(onClick = onWords) {
                         val due = io.github.galis228.materialereader.data.Words.get(ctx).all.collectAsState().value.count { it.due <= System.currentTimeMillis() }
                         androidx.compose.material3.BadgedBox(badge = { if (due > 0) androidx.compose.material3.Badge { Text("$due") } }) {
@@ -156,11 +171,19 @@ fun LibraryScreen(onOpen: (String) -> Unit, onCatalog: () -> Unit, onSettings: (
                 if (current != null) item(span = { GridItemSpan(maxLineSpan) }) {
                     ContinueCard(current) { onOpen(current.id) }
                 }
-                if (!simple) item(span = { GridItemSpan(maxLineSpan) }) { StatsRow(books) }
+                if (!simple) item(span = { GridItemSpan(maxLineSpan) }) { Box(Modifier.clickable(onClick = onStats)) { StatsRow(visible) } }
                 if (!simple) item(span = { GridItemSpan(maxLineSpan) }) {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(Filter.entries) { f ->
-                            FilterChip(selected = filter == f, onClick = { filter = f }, label = { Text(f.label) })
+                            FilterChip(selected = shelf == null && filter == f, onClick = { filter = f; shelf = null }, label = { Text(f.label) })
+                        }
+                        items(shelves) { name ->
+                            FilterChip(selected = shelf == name, onClick = { shelf = if (shelf == name) null else name }, label = { Text(name) },
+                                leadingIcon = { Icon(Icons.Rounded.Label, null, Modifier.size(16.dp)) })
+                        }
+                        if (hasHidden) item {
+                            FilterChip(selected = shelf == HIDDEN_SHELF, onClick = { shelf = if (shelf == HIDDEN_SHELF) null else HIDDEN_SHELF },
+                                label = { Text("Скрытые") }, leadingIcon = { Icon(Icons.Rounded.VisibilityOff, null, Modifier.size(16.dp)) })
                         }
                     }
                 }
@@ -174,6 +197,10 @@ fun LibraryScreen(onOpen: (String) -> Unit, onCatalog: () -> Unit, onSettings: (
                         Spacer(Modifier.height(6.dp))
                         Text(b.title, style = if (simple) MaterialTheme.typography.titleMedium else MaterialTheme.typography.labelLarge,
                             maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        if (b.series.isNotEmpty()) Text(
+                            b.series + if (b.seriesIndex > 0f) " · №" + (if (b.seriesIndex % 1f == 0f) b.seriesIndex.toInt().toString() else b.seriesIndex.toString()) else "",
+                            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        )
                         Text(
                             when {
                                 b.finished -> "прочитана"
@@ -280,4 +307,19 @@ fun formatMinutes(min: Int): String = when {
     min < 1 -> "меньше минуты"
     min < 60 -> "~$min мин"
     else -> "~${min / 60} ч ${min % 60} мин"
+}
+
+private const val HIDDEN_SHELF = "\u0000hidden"
+
+/** Books of one series stand together, in series order, where the first of them would be. */
+private fun groupSeries(list: List<BookEntry>): List<BookEntry> {
+    val bySeries = list.filter { it.series.isNotEmpty() }.groupBy { it.series.lowercase() }
+    val placed = HashSet<String>()
+    val out = ArrayList<BookEntry>(list.size)
+    for (b in list) {
+        if (b.series.isEmpty()) { out += b; continue }
+        val key = b.series.lowercase()
+        if (placed.add(key)) out += bySeries.getValue(key).sortedWith(compareBy({ if (it.seriesIndex > 0f) it.seriesIndex else Float.MAX_VALUE }, { it.title }))
+    }
+    return out
 }

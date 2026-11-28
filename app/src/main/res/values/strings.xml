@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">Material eReader</string>
+    <string name="widget_description">Текущая книга и кнопка «Продолжить»</string>
+    <string name="widget_name">Продолжить чтение</string>
 </resources>

@@ -68,7 +68,76 @@ class BookAi(private val ai: Ai, private val book: ParsedBook) {
         return ai.stream(system, "Вопрос читателя: $question\n\nОтветь по тексту, прочитанному к этому моменту:\n$t")
     }
 
+    /** Rewrites a hard passage in plain modern language, keeping the meaning. */
+    suspend fun simplify(pageText: String): Flow<String> {
+        val t = pageText.take(ai.budgetChars())
+        return ai.stream(system, "Перескажи этот фрагмент простым современным языком, близко к тексту, ничего не добавляя. " +
+            "Сложные слова замени понятными, длинные предложения раздели.\n\nТекст:\n$t")
+    }
+
+    /**
+     * Characters met so far and how they're related, one per line: "Имя — кто это; связи: Другой (кем приходится), …".
+     * Looks through the whole read part: pieces spread over it are condensed first, then merged.
+     */
+    suspend fun characters(block: Int, onStep: (Int, Int) -> Unit): Flow<String> {
+        val budget = ai.budgetChars()
+        val read = text(0, block + 1)
+        val material = if (read.length <= budget) read else {
+            // a few evenly spread pieces, the latest one always included
+            val n = (read.length / budget).coerceIn(2, 6)
+            val step = (read.length - budget) / (n - 1).coerceAtLeast(1)
+            val notes = (0 until n).map { i ->
+                onStep(i + 1, n)
+                val part = read.substring((i * step).coerceAtMost(read.length - budget), ((i * step) + budget).coerceAtMost(read.length))
+                ai.complete(system, "Перечисли персонажей этого фрагмента и их отношения друг с другом, кратко, списком.\n\n$part", maxOut = 260)
+            }
+            notes.joinToString("\n")
+        }
+        onStep(0, 0)
+        return ai.stream(system, "Составь карту персонажей по прочитанному. Каждая строка строго в формате:\n" +
+            "Имя — кто это, одной фразой; связи: Имя2 (кем приходится), Имя3 (кем приходится)\n" +
+            "Только персонажи, которые уже появились. Не больше 12 строк. Без вступления.\n\n$material", maxOut = 700)
+    }
+
+    /** Key ideas of the chapter read so far, one per line: "Мысль — пояснение". For non-fiction cards. */
+    suspend fun keyPoints(chapterStart: Int, block: Int): String {
+        val budget = ai.budgetChars()
+        val t = text(chapterStart, block + 1).let { if (it.length > budget) it.takeLast(budget) else it }
+        return ai.complete(system, "Выдели 3–7 ключевых мыслей этого фрагмента. Каждая строка строго в формате:\n" +
+            "Короткая мысль — пояснение в одном-двух предложениях\nБез нумерации и вступления.\n\n$t", maxOut = 600)
+    }
+
+    /** One question about the chapter for the reading journal. */
+    suspend fun journalQuestion(chapterStart: Int, block: Int): Flow<String> {
+        val t = text(chapterStart, block + 1).takeLast(ai.budgetChars())
+        return ai.stream(system, "Задай читателю один короткий вопрос для читательского дневника по этой главе: " +
+            "о его мнении, чувствах или выводах, без пересказа. Только сам вопрос.\n\n$t", maxOut = 120)
+    }
+
     companion object {
+        /** "Мысль — пояснение" lines into pairs. */
+        fun parsePoints(text: String): List<Pair<String, String>> = text.lines()
+            .map { it.trim().trimStart('-', '•', '*', ' ').replace(Regex("^\\d+[.)]\\s*"), "") }
+            .mapNotNull { l -> val i = l.indexOf(" — ").takeIf { it > 0 } ?: l.indexOf(" - ").takeIf { it > 0 } ?: return@mapNotNull null
+                l.substring(0, i).trim().trim('*') to l.substring(i + 3).trim() }
+            .filter { it.first.isNotEmpty() && it.second.isNotEmpty() }
+
+        /** Character map lines into names, descriptions and links between them. */
+        fun parseCharacters(text: String): List<Triple<String, String, List<Pair<String, String>>>> = text.lines().mapNotNull { raw ->
+            val l = raw.trim().trimStart('-', '•', '*', ' ').replace("**", "")
+            val i = l.indexOf(" — ").takeIf { it > 0 } ?: l.indexOf(" - ").takeIf { it > 0 } ?: return@mapNotNull null
+            val name = l.substring(0, i).trim().removeSuffix(":")
+            val rest = l.substring(i + 3)
+            val j = rest.indexOf("связи:", ignoreCase = true)
+            val desc = (if (j >= 0) rest.substring(0, j) else rest).trim().trimEnd(';', ',', '.').trim()
+            val links = if (j < 0) emptyList() else rest.substring(j + 6).split(Regex(",\\s*(?![^()]*\\))")).mapNotNull { part ->
+                val p = part.trim().trimEnd('.')
+                if (p.isEmpty() || p.startsWith("нет", true)) null
+                else p.substringBefore("(").trim() to p.substringAfter("(", "").substringBefore(")").trim()
+            }
+            if (name.isEmpty() || name.length > 40) null else Triple(name, desc, links)
+        }
+
         /** Crude Russian stem so «Веры», «Вере», «Верой» all match «Вера». */
         fun stem(name: String): String {
             val w = name.trim()

@@ -96,6 +96,13 @@ object EpubParser {
     )
 
     /** Footnote/endnote containers: shown in a popup, not as text in the flow. */
+    /** Blocks of a standalone HTML document (used by the MOBI reader). */
+    fun htmlBlocks(html: String): List<Block> {
+        val out = ArrayList<Block>()
+        collect(Jsoup.parse(html).body(), out, "book.html")
+        return out
+    }
+
     private fun isNoteContainer(el: Element): Boolean {
         val t = (el.attr("epub:type") + " " + el.attr("role")).lowercase()
         return listOf("footnote", "endnote", "rearnote", "doc-footnote", "doc-endnote").any { it in t }

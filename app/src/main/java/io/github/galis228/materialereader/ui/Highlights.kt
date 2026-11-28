@@ -236,3 +236,6 @@ fun QuotesTab(book: ParsedBook, highlights: List<Highlight>, onPick: (Highlight)
         }
     }
 }
+
+/** Bionic reading: bold the start of each word. */
+val LocalBionic = androidx.compose.runtime.staticCompositionLocalOf { false }

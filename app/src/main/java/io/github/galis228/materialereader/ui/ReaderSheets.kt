@@ -161,12 +161,33 @@ fun TextSettingsSheet(s: ReaderSettings, onChange: (ReaderSettings) -> Unit, onD
                         onChange(s.copy(margin = it.roundToInt().toFloat()))
                     }
                     SwitchRow("Выравнивание по ширине", s.justify) { onChange(s.copy(justify = it)) }
+                    SwitchRow("Перенос слов", s.hyphenate) { onChange(s.copy(hyphenate = it)) }
+                    SwitchRow("Бионическое чтение (начала слов жирным)", s.bionic) { onChange(s.copy(bionic = it)) }
+                    if (s.mode == ReadMode.SCROLL) {
+                        SwitchRow("Двуязычный режим: перевод под абзацами", s.bilingual) { onChange(s.copy(bilingual = it)) }
+                        LabeledSlider("Скорость автопрокрутки", s.autoScrollLpm, 4f..60f, { "${it.roundToInt()} строк/мин" }) {
+                            onChange(s.copy(autoScrollLpm = it.roundToInt().toFloat()))
+                        }
+                    }
                     if (s.mode == ReadMode.PAGES) SwitchRow("Разворот в альбомной ориентации", s.twoPages) { onChange(s.copy(twoPages = it)) }
                 }
                 else -> {
                     SwitchRow("Листать тапом по краям", s.tapToTurn) { onChange(s.copy(tapToTurn = it)) }
                     SwitchRow("Листать кнопками громкости", s.volumeKeys) { onChange(s.copy(volumeKeys = it)) }
                     SwitchRow("Не гасить экран", s.keepScreenOn) { onChange(s.copy(keepScreenOn = it)) }
+                    SwitchRow("Одной рукой: тап в любом месте — дальше, у левого края — назад", s.oneHand) { onChange(s.copy(oneHand = it)) }
+                    SwitchRow("Ночная тема с 21:00 до 7:00", s.autoNight) { onChange(s.copy(autoNight = it)) }
+                    Text("Фоновый звук", style = MaterialTheme.typography.titleSmall)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        io.github.galis228.materialereader.data.Ambient.entries.forEach { a ->
+                            FilterChip(selected = s.ambient == a, onClick = { onChange(s.copy(ambient = a)) }, label = { Text(a.label) })
+                        }
+                    }
+                    if (s.ambient != io.github.galis228.materialereader.data.Ambient.NONE)
+                        LabeledSlider("Громкость", s.ambientVolume, 0.05f..1f, { "${(it * 100).roundToInt()}%" }) { onChange(s.copy(ambientVolume = it)) }
+                    LabeledSlider("Таймер «перед сном»", s.bedtimeMinutes.toFloat(), 5f..60f, { "${it.roundToInt()} мин" }) {
+                        onChange(s.copy(bedtimeMinutes = (it / 5).roundToInt() * 5))
+                    }
                 }
             }
         }

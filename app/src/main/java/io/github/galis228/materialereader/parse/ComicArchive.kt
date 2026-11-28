@@ -28,6 +28,7 @@ class ComicArchive private constructor(
         fun open(file: File, format: BookFormat): ComicArchive = when (format) {
             BookFormat.CBZ -> openZip(file)
             BookFormat.CBR -> openRar(file)
+            BookFormat.PDF -> openPdf(file)
             else -> error("Не комикс: $format")
         }
 
@@ -37,6 +38,23 @@ class ComicArchive private constructor(
                 .sortedWith(NaturalOrder)
             if (names.isEmpty()) { zip.close(); error("В архиве нет изображений") }
             return ComicArchive(names, { n -> zip.getInputStream(zip.getEntry(n)).use { it.readBytes() } }, { zip.close() })
+        }
+
+        /** PDF pages rendered by the system's PdfRenderer, about 1600 px wide — sharp enough to zoom. */
+        private fun openPdf(file: File): ComicArchive {
+            val fd = android.os.ParcelFileDescriptor.open(file, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
+            val pdf = try { android.graphics.pdf.PdfRenderer(fd) } catch (e: Throwable) { fd.close(); error("PDF не открылся: ${e.message}") }
+            if (pdf.pageCount == 0) { pdf.close(); fd.close(); error("В PDF нет страниц") }
+            return ComicArchive((0 until pdf.pageCount).map { "$it" }, { n ->
+                pdf.openPage(n.toInt()).use { p ->
+                    val w = 1600
+                    val h = (w.toFloat() * p.height / p.width).toInt().coerceIn(1, 4000)
+                    val bmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+                    bmp.eraseColor(android.graphics.Color.WHITE)
+                    p.render(bmp, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    ByteArrayOutputStream().also { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it); bmp.recycle() }.toByteArray()
+                }
+            }, { pdf.close(); fd.close() })
         }
 
         private fun openRar(file: File): ComicArchive {

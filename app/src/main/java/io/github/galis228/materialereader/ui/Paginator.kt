@@ -36,7 +36,7 @@ data class BlockSpec(val style: TextStyle, val top: Float, val bottom: Float, va
 fun blockSpec(kind: Block.Kind, s: ReaderSettings, color: androidx.compose.ui.graphics.Color, muted: androidx.compose.ui.graphics.Color, density: Density): BlockSpec {
     val base = TextStyle(
         fontFamily = s.font.family(), fontSize = s.fontSize.sp, lineHeight = (s.fontSize * s.lineHeight).sp,
-        color = color, hyphens = Hyphens.Auto, lineBreak = LineBreak.Paragraph,
+        color = color, hyphens = if (s.hyphenate) Hyphens.Auto else Hyphens.None, lineBreak = LineBreak.Paragraph,
         textAlign = if (s.justify) TextAlign.Justify else TextAlign.Start,
     )
     val dp = density.density
@@ -70,6 +70,7 @@ class Paginator(
     private val specs: Map<Block.Kind, BlockSpec>,
     private val width: Int,
     private val height: Int,
+    private val bionic: Boolean = false,
 ) {
     private fun measure(text: androidx.compose.ui.text.AnnotatedString, spec: BlockSpec, start: Int): TextLayoutResult {
         val w = (width - spec.padStart - spec.padEnd).toInt().coerceAtLeast(1)
@@ -95,7 +96,7 @@ class Paginator(
             while (start < text.length && guard++ < 10_000) {
                 val top = spec.topOnPage(cur.isEmpty())
                 val avail = height - y - top
-                val layout = measure(styledSlice(b, start, text.length), spec, start)
+                val layout = measure(styledSlice(b, start, text.length, bionic = bionic), spec, start)
                 val lineH = if (layout.lineCount > 0) layout.getLineBottom(0) - layout.getLineTop(0) else 0f
                 // keep headings with at least two following lines
                 val need = if (b.kind == Block.Kind.HEADING) layout.size.height + lineH * 2 else layout.size.height.toFloat()
@@ -117,7 +118,7 @@ class Paginator(
                 // than the same lines inside the full paragraph. Measure the piece exactly as it will be drawn
                 // and give back lines until it really fits — otherwise the bottom line gets clipped.
                 var end = start + layout.getLineEnd(fit - 1)
-                while (fit > 1 && measure(styledSlice(b, start, end), spec, start).size.height > avail - 1f) {
+                while (fit > 1 && measure(styledSlice(b, start, end, bionic = bionic), spec, start).size.height > avail - 1f) {
                     fit--
                     end = start + layout.getLineEnd(fit - 1)
                 }
