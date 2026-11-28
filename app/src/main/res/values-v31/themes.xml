@@ -1,0 +1,12 @@
+<resources>
+    <!-- Android 12+ system splash: the app icon on the page colour, light or dark -->
+    <style name="Theme.MaterialEReader" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:windowLightStatusBar">@bool/light_bars</item>
+        <item name="android:windowSplashScreenBackground">@color/bg</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_fg</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/icon_bg</item>
+    </style>
+</resources>
