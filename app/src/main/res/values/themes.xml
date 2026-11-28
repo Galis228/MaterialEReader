@@ -1,9 +1,11 @@
 <resources>
-    <style name="Theme.MaterialEReader" parent="android:Theme.Material.Light.NoActionBar">
+    <style name="Theme.MaterialEReader" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowBackground">@color/bg</item>
+        <item name="android:windowLightStatusBar">@bool/light_bars</item>
     </style>
     <color name="bg">#F3F6EE</color>
+    <bool name="light_bars">true</bool>
     <color name="icon_bg">#2F5D3A</color>
 </resources>

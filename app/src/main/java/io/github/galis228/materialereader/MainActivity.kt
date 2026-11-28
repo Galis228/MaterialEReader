@@ -68,7 +68,14 @@ class MainActivity : ComponentActivity() {
                     incoming = null
                     library.import(uri).onSuccess { nav.navigate("reader/${it.id}") }
                 }
-                NavHost(nav, startDestination = "library") {
+                NavHost(
+                    nav, startDestination = "library",
+                    // Material 3 shared-axis motion between screens
+                    enterTransition = { androidx.compose.animation.slideInHorizontally(androidx.compose.animation.core.tween(320)) { it / 6 } + androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(220, 60)) },
+                    exitTransition = { androidx.compose.animation.slideOutHorizontally(androidx.compose.animation.core.tween(320)) { -it / 6 } + androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(120)) },
+                    popEnterTransition = { androidx.compose.animation.slideInHorizontally(androidx.compose.animation.core.tween(320)) { -it / 6 } + androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(220, 60)) },
+                    popExitTransition = { androidx.compose.animation.slideOutHorizontally(androidx.compose.animation.core.tween(320)) { it / 6 } + androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(120)) },
+                ) {
                     composable("library") {
                         LibraryScreen(
                             onOpen = { id -> nav.navigate("reader/$id") },

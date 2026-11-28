@@ -25,6 +25,10 @@ enum class PageAnim(val label: String) {
     val isCurl get() = this == ROLL
 }
 
+/** Where the app's colors come from. */
+enum class AppColor(val label: String) { WALLPAPER("Из обоев"), COVER("Из обложки книги"), CLASSIC("Зелёная классика") }
+enum class DarkMode(val label: String) { SYSTEM("Как в системе"), LIGHT("Светлая"), DARK("Тёмная") }
+
 enum class Ambient(val label: String) { NONE("Тишина"), RAIN("Дождь"), FIRE("Камин"), SEA("Море"), WIND("Ветер") }
 
 data class ReaderSettings(
@@ -75,7 +79,17 @@ data class ReaderSettings(
     val twoFingerDown: TapAction = TapAction.NONE,
     /** Color of footnote marks; 0 = a color picked to stand out from the theme. */
     val noteColor: Long = 0L,
+    val appColor: AppColor = AppColor.WALLPAPER,
+    val darkMode: DarkMode = DarkMode.SYSTEM,
+    /** Pure black surfaces in the dark theme (OLED). */
+    val amoled: Boolean = false,
+    /** How deep AI explanations go: 0 = like for a child … 3 = academic. */
+    val aiLevel: Int = 1,
+    /** Library screen layout. */
+    val libraryLayout: LibraryLayout = LibraryLayout.TABS,
 )
+
+enum class LibraryLayout(val label: String) { TABS("Вкладки-полки"), ROWS("Полки рядами") }
 
 /** Actions for screen zones and gestures. */
 enum class TapAction(val label: String) {
@@ -126,6 +140,11 @@ class SettingsRepo(private val ctx: Context) {
         val twoUp = stringPreferencesKey("two_up")
         val twoDown = stringPreferencesKey("two_down")
         val noteColor = androidx.datastore.preferences.core.longPreferencesKey("note_color")
+        val appColor = stringPreferencesKey("app_color")
+        val darkMode = stringPreferencesKey("dark_mode")
+        val amoled = booleanPreferencesKey("amoled")
+        val aiLevel = androidx.datastore.preferences.core.intPreferencesKey("ai_level")
+        val libLayout = stringPreferencesKey("library_layout")
     }
 
     val settings: Flow<ReaderSettings> = ctx.store.data.map { p -> p.toSettings() }
@@ -167,6 +186,11 @@ class SettingsRepo(private val ctx: Context) {
             twoFingerUp = this[K.twoUp]?.let { runCatching { TapAction.valueOf(it) }.getOrNull() } ?: d.twoFingerUp,
             twoFingerDown = this[K.twoDown]?.let { runCatching { TapAction.valueOf(it) }.getOrNull() } ?: d.twoFingerDown,
             noteColor = this[K.noteColor] ?: d.noteColor,
+            appColor = this[K.appColor]?.let { runCatching { AppColor.valueOf(it) }.getOrNull() } ?: d.appColor,
+            darkMode = this[K.darkMode]?.let { runCatching { DarkMode.valueOf(it) }.getOrNull() } ?: d.darkMode,
+            amoled = this[K.amoled] ?: d.amoled,
+            aiLevel = this[K.aiLevel] ?: d.aiLevel,
+            libraryLayout = this[K.libLayout]?.let { runCatching { LibraryLayout.valueOf(it) }.getOrNull() } ?: d.libraryLayout,
         )
     }
 
@@ -184,6 +208,8 @@ class SettingsRepo(private val ctx: Context) {
             it[K.dropCap] = s.dropCap; it[K.noSpoilers] = s.noSpoilers; it[K.zones] = s.tapZones.joinToString(",") { a -> a.name }
             it[K.dbl] = s.doubleTap.name; it[K.twoUp] = s.twoFingerUp.name; it[K.twoDown] = s.twoFingerDown.name
             it[K.noteColor] = s.noteColor
+            it[K.appColor] = s.appColor.name; it[K.darkMode] = s.darkMode.name; it[K.amoled] = s.amoled
+            it[K.aiLevel] = s.aiLevel; it[K.libLayout] = s.libraryLayout.name
         }
     }
 }

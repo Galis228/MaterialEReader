@@ -1,5 +1,8 @@
 package io.github.galis228.materialereader.ui
 
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.CollectionsBookmark
+import androidx.compose.material.icons.rounded.Checklist
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.automirrored.rounded.Label
 import androidx.compose.runtime.collectAsState
@@ -92,7 +95,10 @@ object PendingCover {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun BookMenuSheet(book: BookEntry, onOpen: () -> Unit, onDelete: () -> Unit, onDismiss: () -> Unit) {
+fun BookMenuSheet(
+    book: BookEntry, onOpen: () -> Unit, onDelete: () -> Unit,
+    onSelect: () -> Unit = {}, onAutoShelf: (name: String, count: Int) -> Unit = { _, _ -> }, onDismiss: () -> Unit,
+) {
     val scope = rememberCoroutineScope()
     val library = Library.get(LocalContext.current)
     var covers by remember { mutableStateOf(false) }
@@ -136,6 +142,25 @@ fun BookMenuSheet(book: BookEntry, onOpen: () -> Unit, onDelete: () -> Unit, onD
             else ListItem({ Text("Отметить как прочитанную") },
                 Modifier.clickable { scope.launch { library.setReadMark(book.id, 1) }; onDismiss() },
                 leadingContent = { Icon(Icons.Rounded.CheckCircle, null) }, colors = colors)
+            ListItem({ Text("Выбрать несколько") }, Modifier.clickable { onSelect(); onDismiss() },
+                supportingContent = { Text("Отметить книги и разом положить на полку, скрыть или удалить") },
+                leadingContent = { Icon(Icons.Rounded.Checklist, null) }, colors = colors)
+            if (book.series.isNotEmpty()) ListItem({ Text("Полка серии «${book.series}»") }, Modifier.clickable {
+                scope.launch {
+                    val key = book.series.lowercase()
+                    val (n, c) = library.autoShelf(book.series) { it.series.lowercase() == key }
+                    onAutoShelf(n, c)
+                }
+                onDismiss()
+            }, supportingContent = { Text("Собрать все книги этой серии") }, leadingContent = { Icon(Icons.Rounded.CollectionsBookmark, null) }, colors = colors)
+            if (book.author.isNotEmpty()) ListItem({ Text("Полка автора") }, Modifier.clickable {
+                scope.launch {
+                    val who = surname(book.author).lowercase()
+                    val (n, c) = library.autoShelf(book.author.split(',').first().trim()) { surname(it.author).lowercase() == who }
+                    onAutoShelf(n, c)
+                }
+                onDismiss()
+            }, supportingContent = { Text("Все книги: ${book.author.split(',').first().trim()}") }, leadingContent = { Icon(Icons.Rounded.Person, null) }, colors = colors)
             ListItem({ Text("Полки") }, Modifier.clickable { shelving = true },
                 supportingContent = { Text(if (book.shelves.isEmpty()) "Не на полке" else book.shelves.joinToString(", ")) },
                 leadingContent = { Icon(Icons.AutoMirrored.Rounded.Label, null) }, colors = colors)

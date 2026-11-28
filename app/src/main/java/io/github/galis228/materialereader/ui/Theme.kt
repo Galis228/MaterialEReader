@@ -1,5 +1,8 @@
 package io.github.galis228.materialereader.ui
 
+import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.collectAsState
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ColorScheme
@@ -33,16 +36,89 @@ private val DarkGreen = darkColorScheme(
     primaryContainer = Color(0xFF2F5D3A), onPrimaryContainer = Color(0xFFC8DCC0),
 )
 
+/**
+ * Material 3 theme of the app. Colors come from the wallpaper (Material You), from the cover of the book being
+ * read, or the classic green; dark mode follows the system or the person's choice; OLED black is optional.
+ * Shapes are a little rounder than the defaults.
+ */
 @Composable
 fun AppTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
     val ctx = LocalContext.current
-    val scheme = when {
-        Build.VERSION.SDK_INT >= 31 -> if (dark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
+    val s = androidx.compose.runtime.remember { io.github.galis228.materialereader.data.SettingsRepo(ctx) }
+        .settings.collectAsState(initial = null).value
+    val dark = when (s?.darkMode) {
+        io.github.galis228.materialereader.data.DarkMode.LIGHT -> false
+        io.github.galis228.materialereader.data.DarkMode.DARK -> true
+        else -> isSystemInDarkTheme()
+    }
+    val coverSeed = if (s?.appColor == io.github.galis228.materialereader.data.AppColor.COVER) rememberCoverSeed() else null
+    var scheme = when {
+        coverSeed != null -> schemeFromSeed(coverSeed, dark)
+        s?.appColor != io.github.galis228.materialereader.data.AppColor.CLASSIC && Build.VERSION.SDK_INT >= 31 ->
+            if (dark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
         dark -> DarkGreen
         else -> LightGreen
     }
-    MaterialTheme(colorScheme = scheme, content = content)
+    if (dark && s?.amoled == true) scheme = scheme.copy(
+        background = Color.Black, surface = Color.Black, surfaceContainerLowest = Color.Black,
+        surfaceContainerLow = Color(0xFF0B0B0D), surfaceContainer = Color(0xFF111114),
+    )
+    MaterialTheme(colorScheme = scheme, shapes = AppShapes, content = content)
+}
+
+private val AppShapes = androidx.compose.material3.Shapes(
+    extraSmall = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+    small = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+    medium = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+    large = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
+    extraLarge = androidx.compose.foundation.shape.RoundedCornerShape(32.dp),
+)
+
+/** Seed color of the current book's cover, the most "Material" one (Celebi quantizer + scoring). */
+@Composable
+private fun rememberCoverSeed(): Int? {
+    val ctx = LocalContext.current
+    val lib = androidx.compose.runtime.remember { io.github.galis228.materialereader.data.Library.get(ctx) }
+    val books by lib.books.collectAsState()
+    val cur = books.filter { it.hasCover && !it.hidden }.maxByOrNull { it.lastOpenedAt } ?: return null
+    val seed by androidx.compose.runtime.produceState<Int?>(seedCache[cur.id + "|" + cur.coverRev], cur.id, cur.coverRev) {
+        if (value != null) return@produceState
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { coverSeed(lib.coverFile(cur.id)) }
+            ?.also { seedCache[cur.id + "|" + cur.coverRev] = it }
+    }
+    return seed
+}
+
+private val seedCache = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+@android.annotation.SuppressLint("RestrictedApi")
+fun coverSeed(file: java.io.File): Int? = runCatching {
+    val bmp = android.graphics.BitmapFactory.decodeFile(file.path, android.graphics.BitmapFactory.Options().apply { inSampleSize = 8 }) ?: return null
+    val small = android.graphics.Bitmap.createScaledBitmap(bmp, 64, (64f * bmp.height / bmp.width).toInt().coerceAtLeast(1), true)
+    val px = IntArray(small.width * small.height).also { small.getPixels(it, 0, small.width, 0, 0, small.width, small.height) }
+    val q = com.google.android.material.color.utilities.QuantizerCelebi.quantize(px, 64)
+    com.google.android.material.color.utilities.Score.score(q).firstOrNull()
+}.getOrNull()
+
+/** A full Material 3 color scheme from one seed color (tonal spot, like Material You does with the wallpaper). */
+@android.annotation.SuppressLint("RestrictedApi")
+fun schemeFromSeed(seed: Int, dark: Boolean): ColorScheme {
+    val sc = com.google.android.material.color.utilities.SchemeTonalSpot(com.google.android.material.color.utilities.Hct.fromInt(seed), dark, 0.0)
+    val m = com.google.android.material.color.utilities.MaterialDynamicColors()
+    fun c(d: com.google.android.material.color.utilities.DynamicColor) = Color(d.getArgb(sc))
+    val base = if (dark) darkColorScheme() else lightColorScheme()
+    return base.copy(
+        primary = c(m.primary()), onPrimary = c(m.onPrimary()), primaryContainer = c(m.primaryContainer()), onPrimaryContainer = c(m.onPrimaryContainer()),
+        secondary = c(m.secondary()), onSecondary = c(m.onSecondary()), secondaryContainer = c(m.secondaryContainer()), onSecondaryContainer = c(m.onSecondaryContainer()),
+        tertiary = c(m.tertiary()), onTertiary = c(m.onTertiary()), tertiaryContainer = c(m.tertiaryContainer()), onTertiaryContainer = c(m.onTertiaryContainer()),
+        error = c(m.error()), onError = c(m.onError()), errorContainer = c(m.errorContainer()), onErrorContainer = c(m.onErrorContainer()),
+        background = c(m.background()), onBackground = c(m.onBackground()), surface = c(m.surface()), onSurface = c(m.onSurface()),
+        surfaceVariant = c(m.surfaceVariant()), onSurfaceVariant = c(m.onSurfaceVariant()), outline = c(m.outline()), outlineVariant = c(m.outlineVariant()),
+        inverseSurface = c(m.inverseSurface()), inverseOnSurface = c(m.inverseOnSurface()), inversePrimary = c(m.inversePrimary()),
+        surfaceDim = c(m.surfaceDim()), surfaceBright = c(m.surfaceBright()), surfaceContainerLowest = c(m.surfaceContainerLowest()),
+        surfaceContainerLow = c(m.surfaceContainerLow()), surfaceContainer = c(m.surfaceContainer()), surfaceContainerHigh = c(m.surfaceContainerHigh()),
+        surfaceContainerHighest = c(m.surfaceContainerHighest()), surfaceTint = c(m.primary()), scrim = Color.Black,
+    )
 }
 
 /** Colors of the reading page. */

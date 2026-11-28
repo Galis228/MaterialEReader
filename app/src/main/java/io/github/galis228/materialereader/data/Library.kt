@@ -237,6 +237,27 @@ class Library private constructor(private val ctx: Context) {
         l.removeAt(i); l.add(j, name); _shelves.value = l; saveShelves()
     }
 
+    /** Puts several books on a shelf at once (creating it if needed). */
+    suspend fun addToShelf(ids: Collection<String>, name: String) {
+        val n = createShelf(name) ?: return
+        mutex.withLock {
+            _books.update { list -> list.map { b -> if (b.id in ids && n !in b.shelves) b.copy(shelves = b.shelves + n) else b } }
+            withContext(Dispatchers.IO) { save() }
+        }
+    }
+
+    /** A shelf named after a series or an author, holding every book of it. Returns the shelf name and count. */
+    suspend fun autoShelf(name: String, match: (BookEntry) -> Boolean): Pair<String, Int> {
+        val ids = _books.value.filter(match).map { it.id }
+        addToShelf(ids, name)
+        return name to ids.size
+    }
+
+    suspend fun editMany(ids: Collection<String>, change: (BookEntry) -> BookEntry) = mutex.withLock {
+        _books.update { list -> list.map { if (it.id in ids) change(it) else it } }
+        withContext(Dispatchers.IO) { save() }
+    }
+
     suspend fun toggleShelf(id: String, name: String) = editBook(id) { b ->
         b.copy(shelves = if (name in b.shelves) b.shelves - name else b.shelves + name)
     }
