@@ -9,6 +9,21 @@ object BookParser {
         BookFormat.FB2_ZIP -> Fb2Parser.parseZip(bytes, fileName)
         BookFormat.TXT -> TxtParser.parse(bytes, fileName)
         BookFormat.CBZ, BookFormat.CBR -> error("Комикс открывается через ComicArchive")
+    }.let { it.copy(blocks = it.blocks.map(::tidy)) } // one-to-one, so chapter indexes stay valid
+
+    private val separatorRe = Regex("""[\s*•·⁂❦◆◇~—–\-_=#.§]{1,40}""")
+    private val numberHeadingRe = Regex("""[IVXLCDM]{1,7}\.?|\d{1,3}""")
+
+    /**
+     * Scene breaks written as text ("* * *", "***", "⁂", "———") become separators, and lone chapter numbers
+     * ("IV", "12") become headings, so both are drawn centered instead of as indented paragraphs.
+     */
+    fun tidy(b: Block): Block {
+        if (b.kind == Block.Kind.HEADING || b.kind == Block.Kind.SEPARATOR) return b
+        val t = b.text.trim()
+        if (t.isNotEmpty() && t.any { !it.isWhitespace() && it != '.' } && separatorRe.matches(t)) return Block(Block.Kind.SEPARATOR, "* * *")
+        if (b.kind == Block.Kind.PARAGRAPH && numberHeadingRe.matches(t)) return Block(Block.Kind.HEADING, t, b.refs)
+        return b
     }
 
     /** Guesses format by file name, then by content signature. */

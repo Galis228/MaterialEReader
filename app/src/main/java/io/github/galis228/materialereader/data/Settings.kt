@@ -17,7 +17,13 @@ enum class ReaderFont(val label: String) {
     SERIF("Системный с засечками"), SANS("Системный"), MONO("Моно"), CUSTOM("Свой шрифт"),
 }
 enum class ReadMode(val label: String) { SCROLL("Прокрутка"), PAGES("Страницы") }
-enum class PageAnim(val label: String) { SLIDE("Сдвиг"), COVER("Наложение"), FADE("Затухание"), CURL("Загиб"), NONE("Без анимации") }
+enum class PageAnim(val label: String) {
+    SLIDE("Сдвиг"), COVER("Наложение"), FADE("Затухание"),
+    ROLL("Рулон"), BEND("Мягкий изгиб"), FLIP("Поворот от корешка"),
+    NONE("Без анимации");
+
+    val isCurl get() = this == ROLL || this == BEND || this == FLIP
+}
 
 data class ReaderSettings(
     val fontSize: Float = 19f,
@@ -81,7 +87,7 @@ class SettingsRepo(private val ctx: Context) {
             keepScreenOn = this[K.screenOn] ?: d.keepScreenOn,
             tapToTurn = this[K.tap] ?: d.tapToTurn,
             mode = this[K.mode]?.let { runCatching { ReadMode.valueOf(it) }.getOrNull() } ?: d.mode,
-            anim = this[K.anim]?.let { runCatching { PageAnim.valueOf(it) }.getOrNull() } ?: d.anim,
+            anim = this[K.anim]?.let { if (it == "CURL") PageAnim.BEND else runCatching { PageAnim.valueOf(it) }.getOrNull() } ?: d.anim,
             twoPages = this[K.two] ?: d.twoPages,
             mangaRtl = this[K.rtl] ?: d.mangaRtl,
             brightness = this[K.bright] ?: d.brightness,

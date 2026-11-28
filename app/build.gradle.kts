@@ -24,8 +24,8 @@ android {
         applicationId = "io.github.galis228.materialereader"
         minSdk = 26
         targetSdk = 36
-        versionCode = 11
-        versionName = "0.6.0"
+        versionCode = 12
+        versionName = "0.7.0"
         buildConfigField("String", "UPDATE_REPO", "\"$updateRepo\"")
         ndk { abiFilters += "arm64-v8a" }
     }

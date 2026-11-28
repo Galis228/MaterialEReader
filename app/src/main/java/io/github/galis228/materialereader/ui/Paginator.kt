@@ -73,7 +73,8 @@ class Paginator(
 ) {
     private fun measure(text: androidx.compose.ui.text.AnnotatedString, spec: BlockSpec, start: Int): TextLayoutResult {
         val w = (width - spec.padStart - spec.padEnd).toInt().coerceAtLeast(1)
-        return measurer.measure(text, spec.forSlice(start), constraints = Constraints(maxWidth = w), skipCache = true)
+        // fixed width, so centered and right-aligned blocks are laid out across the whole column
+        return measurer.measure(text, spec.forSlice(start), constraints = Constraints.fixedWidth(w), skipCache = true)
     }
 
     suspend fun paginate(book: ParsedBook, from: Int = 0, to: Int = book.blocks.size, onProgress: (Float) -> Unit = {}): List<Page> {

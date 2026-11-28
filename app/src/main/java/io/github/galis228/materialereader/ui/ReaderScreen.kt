@@ -123,6 +123,7 @@ import io.github.galis228.materialereader.parse.countWords
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -241,7 +242,7 @@ private fun BookReader(
     var scrollOffset by remember { mutableIntStateOf(startOffset) }
     LaunchedEffect(Unit) {
         var lastSave = System.currentTimeMillis()
-        snapshotFlow { Triple(ctl.block, ctl.char, scrollOffset) }.debounce(700).collect { (b, c, off) ->
+        snapshotFlow { Triple(ctl.block, ctl.char, scrollOffset) }.debounce(400).collect { (b, c, off) ->
             val now = System.currentTimeMillis()
             library.updatePosition(id, b, off, c, (now - lastSave).coerceAtMost(5 * 60_000L))
             lastSave = now
@@ -249,6 +250,15 @@ private fun BookReader(
     }
     DisposableEffect(Unit) {
         onDispose { runBlocking { library.updatePosition(id, ctl.block, scrollOffset, ctl.char, 0) } }
+    }
+    // Save right away when the app goes to the background: the system may kill it before the debounce fires
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
+            if (e == androidx.lifecycle.Lifecycle.Event.ON_STOP) runBlocking { library.updatePosition(id, ctl.block, scrollOffset, ctl.char, 0) }
+        }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
     }
 
     DisposableEffect(settings.volumeKeys) {
@@ -283,9 +293,13 @@ private fun BookReader(
 
     // Tap on a footnote mark: show the note instead of turning the page
     var footnote by remember { mutableStateOf<Footnote?>(null) }
+    var footnoteContext by remember { mutableStateOf("") }
+    // Turning the page closes an open footnote
+    LaunchedEffect(Unit) { snapshotFlow { ctl.block to ctl.char }.drop(1).collect { footnote = null } }
     var returnTo by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     val slop = with(LocalDensity.current) { 14.dp.toPx() }
     val tapAt: (Offset) -> Boolean = tap@{ p ->
+        if (footnote != null) { footnote = null; return@tap true } // a tap on the page closes the note panel
         if (uiVisible || sheet != null) return@tap false
         val h = hits.hitAt(p) ?: return@tap false
         val blk = book.blocks.getOrNull(h.block) ?: return@tap false
@@ -293,7 +307,7 @@ private fun BookReader(
             h.boxOf(r.start, r.end)?.let { b -> androidx.compose.ui.geometry.Rect(b.left - slop, b.top - slop, b.right + slop, b.bottom + slop).contains(p) } == true
         } ?: return@tap false
         footnote = findFootnote(book, h.block, ref)
-        sheet = Sheet.NOTE
+        footnoteContext = sentenceAround(blk.text, ref.start until ref.end.coerceAtLeast(ref.start + 1))
         true
     }
 
@@ -333,6 +347,18 @@ private fun BookReader(
                 }
             }
         }
+
+        AnimatedVisibility(footnote != null && !uiVisible, Modifier.align(Alignment.BottomCenter),
+            enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut()) {
+            var shown by remember { mutableStateOf<Footnote?>(null) }
+            footnote?.let { shown = it } // keep the content while the panel slides away
+            shown?.let { n ->
+                FootnotePanel(n, footnoteContext, book.title, colors,
+                    onGo = { b -> returnTo = ctl.block to ctl.char; footnote = null; ctl.jumpTo(b, 0) },
+                    onDismiss = { footnote = null })
+            }
+        }
+        BackHandler(enabled = footnote != null) { footnote = null }
 
         if (!uiVisible && settings.mode == ReadMode.SCROLL) {
             val p = if (ctl.sliderMax <= 0f) 1f else (ctl.sliderValue / ctl.sliderMax).coerceIn(0f, 1f)
@@ -392,9 +418,6 @@ private fun BookReader(
             onRemove = { c -> scope.launch { library.removeHighlight(id, c) } },
             onAskAi = { text -> aiPreset = text; sheet = Sheet.AI },
         ) { if (sheet == Sheet.SELECT) sheet = null }
-        Sheet.NOTE -> footnote?.let { n ->
-            FootnoteSheet(n, onGo = { b -> returnTo = ctl.block to ctl.char; sheet = null; ctl.jumpTo(b, 0) }) { sheet = null }
-        }
         Sheet.AI -> AiSheet(
             book, ctl.block, book.chapters.getOrNull(chapterIndex)?.startBlock ?: 0,
             pageText = { aiPreset ?: ctl.visibleText() }, preset = aiPreset,
@@ -404,7 +427,7 @@ private fun BookReader(
     }
 }
 
-private enum class Sheet { TEXT, TOC, AI, SEARCH, SELECT, NOTE }
+private enum class Sheet { TEXT, TOC, AI, SEARCH, SELECT }
 
 @Composable
 fun SystemBars(visible: Boolean, dark: Boolean, keepScreenOn: Boolean) {
@@ -579,13 +602,13 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
 
         val per = if (two) 2 else 1
         val spreads = (list.size + per - 1) / per
-        var spread by remember { mutableIntStateOf((list.indexOfPosition(ctl.block, ctl.char) / per).coerceIn(0, spreads - 1)) }
+        // Recomputed together with the pages (first the current chapter, then the whole book, after a font change or
+        // rotation), so a page index from the old list is never read against the new one.
+        var spread by remember(list, per) { mutableIntStateOf((list.indexOfPosition(ctl.block, ctl.char) / per).coerceIn(0, spreads - 1)) }
         val scope = rememberCoroutineScope()
         val anim = rememberUpdatedState(s.anim)
         var curlTurn by remember { mutableStateOf<(Int) -> Unit>({}) }
 
-        // After re-pagination (font change, rotation) keep the reading position
-        LaunchedEffect(list, per) { spread = (list.indexOfPosition(ctl.block, ctl.char) / per).coerceIn(0, spreads - 1) }
         LaunchedEffect(list, per) {
             snapshotFlow { spread }.collect { sp ->
                 val p = list[(sp * per).coerceAtMost(list.lastIndex)]
@@ -633,15 +656,17 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
             }
         }
 
-        if (s.anim == PageAnim.CURL) {
+        if (s.anim.isCurl) {
             ctl.turn = { dir -> curlTurn(dir) }
             CurlPager(
+                style = when (s.anim) { PageAnim.ROLL -> CurlStyle.ROLL; PageAnim.FLIP -> CurlStyle.FLIP; else -> CurlStyle.BEND },
+                dark = c.isDark,
                 count = spreads, current = spread, onCurrentChange = { spread = it },
                 paper = lerpColor(c.bg, if (c.isDark) Color.White else Color.Black, 0.04f),
                 registerTurn = { curlTurn = it }, onTap = onTap, onLongPress = onLongPress, page = spreadView,
             )
         } else {
-            val pager = rememberPagerState(initialPage = spread) { spreads }
+            val pager = remember(list, per) { PagerState(currentPage = spread) { spreads } }
             LaunchedEffect(pager) { snapshotFlow { pager.currentPage }.collect { spread = it } }
             LaunchedEffect(spread) { if (pager.currentPage != spread && !pager.isScrollInProgress) pager.scrollToPage(spread) }
             ctl.turn = { dir ->
@@ -683,7 +708,7 @@ private fun PageView(page: Page, book: ParsedBook, specs: Map<Block.Kind, BlockS
                 val spec = specs.getValue(b.kind)
                 val w = (width - spec.padStart - spec.padEnd).toInt().coerceAtLeast(1)
                 val layout = measurer.measure(styledSlice(b, sl.start, sl.end, accent, highlights[sl.block].orEmpty(), dark),
-                    spec.forSlice(sl.start), constraints = Constraints(maxWidth = w), skipCache = true)
+                    spec.forSlice(sl.start), constraints = Constraints.fixedWidth(w), skipCache = true)
                 val top = y + spec.topOnPage(k == 0)
                 y = top + layout.size.height + spec.bottom
                 PlacedSlice(sl.block, layout, Offset(spec.padStart, top), w, sl.start)
@@ -727,25 +752,16 @@ private fun Modifier.pageTransition(pager: PagerState, page: Int, anim: PageAnim
                 translationX = offset * size.width
                 alpha = (1f - abs(offset)).coerceIn(0f, 1f)
             }
-            PageAnim.CURL -> {
-                translationX = offset * size.width
-                if (offset < 0f) {
-                    // incoming page turns over the spine like a sheet of paper
-                    transformOrigin = TransformOrigin(0f, 0.5f)
-                    rotationY = (-offset * 100f).coerceAtMost(90f)
-                    cameraDistance = 14f * density
-                    shadowElevation = 16f
-                }
-            }
             PageAnim.NONE -> {
                 translationX = offset * size.width
                 alpha = if (abs(offset) < 0.5f) 1f else 0f
             }
+            else -> {} // curls are drawn by CurlPager
         }
     }
     .drawWithContent {
         drawContent()
-        if (anim == PageAnim.CURL || anim == PageAnim.COVER) {
+        if (anim == PageAnim.COVER) {
             val offset = (pager.currentPage - page) + pager.currentPageOffsetFraction
             if (offset > 0f) drawRect(Color.Black, alpha = (offset * 0.35f).coerceIn(0f, 0.35f))
         }

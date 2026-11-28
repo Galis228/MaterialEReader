@@ -1,6 +1,30 @@
 package io.github.galis228.materialereader.ui
 
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Clear
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+import io.github.galis228.materialereader.ai.Ai
+import io.github.galis228.materialereader.ai.visibleAnswer
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -10,15 +34,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import io.github.galis228.materialereader.parse.NoteRef
@@ -43,23 +62,64 @@ fun findFootnote(book: ParsedBook, block: Int, ref: NoteRef): Footnote {
     return Footnote(ref.label, null, null)
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * Compact note panel at the bottom of the page. It doesn't cover the book with a modal sheet: tapping the
+ * page closes it. If the note's text isn't in the book, the AI explains what the marked place likely refers to.
+ */
 @Composable
-fun FootnoteSheet(note: Footnote, onGo: (Int) -> Unit, onDismiss: () -> Unit) {
-    val maxH = (LocalConfiguration.current.screenHeightDp * 0.45f).dp
-    ModalBottomSheet(onDismissRequest = onDismiss, scrimColor = Color.Transparent) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).navigationBarsPadding().padding(bottom = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Сноска ${note.label}", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-            Column(Modifier.heightIn(max = maxH).verticalScroll(rememberScrollState())) {
+fun FootnotePanel(
+    note: Footnote, context: String, bookTitle: String, c: PageColors,
+    onGo: (Int) -> Unit, onDismiss: () -> Unit, modifier: Modifier = Modifier,
+) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var answer by remember(note) { mutableStateOf<String?>(null) }
+    var status by remember(note) { mutableStateOf<String?>(null) }
+    var job by remember { mutableStateOf<Job?>(null) }
+    fun explain() {
+        job?.cancel(); answer = ""; status = "Спрашиваю ИИ…"
+        job = scope.launch {
+            runCatching {
+                val ai = Ai.get(ctx)
+                val user = if (note.text != null)
+                    "Объясни простыми словами эту сноску из книги «$bookTitle». Место в тексте: «$context». Сноска: «${note.text}»."
+                else
+                    "В книге «$bookTitle» стоит сноска ${note.label} в этом месте: «$context». Текста сноски нет. " +
+                        "Коротко объясни, что здесь, вероятно, нуждается в пояснении: слово, имя, реалия, цитата или перевод."
+                ai.stream("Ты — комментатор книги. Отвечай коротко, 2–4 предложения, на языке книги.", user, 0.2f, 350)
+                    .collect { answer = visibleAnswer(it); if (!answer.isNullOrEmpty()) status = null }
+            }.onFailure { if (it !is kotlinx.coroutines.CancellationException) { status = null; answer = null; status = it.message ?: "ИИ не ответил" } }
+        }
+    }
+    LaunchedEffect(note) { if (note.text == null) explain() }
+    DisposableEffect(Unit) { onDispose { job?.cancel() } }
+
+    val maxH = (LocalConfiguration.current.screenHeightDp * 0.32f).dp
+    Surface(
+        modifier = modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 10.dp, vertical = 8.dp)
+            .pointerInput(note) { detectVerticalDragGestures { _, dy -> if (dy > 18f) onDismiss() } },
+        shape = RoundedCornerShape(20.dp), color = c.panel, contentColor = c.text, shadowElevation = 8.dp,
+    ) {
+        Column(Modifier.padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Сноска ${note.label}", color = c.accent, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                IconButton(onClick = onDismiss, modifier = Modifier.size(36.dp)) { Icon(Icons.Rounded.Clear, "Закрыть", Modifier.size(18.dp)) }
+            }
+            Column(Modifier.padding(end = 10.dp).heightIn(max = maxH).verticalScroll(rememberScrollState())) {
                 SelectionContainer {
-                    Text(note.text ?: "Текст этой сноски в книге не нашёлся.", style = MaterialTheme.typography.bodyLarge,
-                        color = if (note.text == null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface)
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (note.text != null) Text(note.text, fontSize = 15.sp, lineHeight = 21.sp)
+                        else Text("В книге нет текста этой сноски.", color = c.muted, fontSize = 13.sp)
+                        answer?.takeIf { it.isNotEmpty() }?.let {
+                            Text("✦ ИИ: $it", fontSize = 14.sp, lineHeight = 20.sp, color = c.text.copy(alpha = 0.9f))
+                        }
+                        status?.let { Text(it, color = c.muted, fontSize = 13.sp) }
+                    }
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                note.block?.let { b -> FilledTonalButton(onClick = { onGo(b) }) { Text("Перейти к сноске") } }
-                TextButton(onClick = onDismiss) { Text("Закрыть") }
+            Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                note.block?.let { b -> TextButton(onClick = { onGo(b) }) { Text("Перейти к сноске", color = c.accent) } }
+                if (note.text != null && answer == null) TextButton(onClick = { explain() }) { Text("Объяснить с ИИ", color = c.accent) }
             }
         }
     }
