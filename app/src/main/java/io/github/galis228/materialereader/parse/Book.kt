@@ -1,8 +1,15 @@
 package io.github.galis228.materialereader.parse
 
-/** One displayable block of a book. [refs] mark footnote references inside [text]. */
-data class Block(val kind: Kind, val text: String, val refs: List<NoteRef> = emptyList()) {
-    enum class Kind { HEADING, PARAGRAPH, QUOTE, EPIGRAPH, SEPARATOR }
+/**
+ * One displayable block of a book. [refs] mark footnote references inside [text], [links] internal links.
+ * IMAGE blocks name their picture in [src] (a key of [ParsedBook.images]); VERSE keeps its line breaks as '\n';
+ * TABLE holds rows on separate lines with cells joined by [TABLE_SEP].
+ */
+data class Block(
+    val kind: Kind, val text: String, val refs: List<NoteRef> = emptyList(),
+    val src: String = "", val links: List<Link> = emptyList(),
+) {
+    enum class Kind { HEADING, PARAGRAPH, QUOTE, EPIGRAPH, SEPARATOR, IMAGE, VERSE, TABLE }
 
     /** Linked references plus bare "[12]" marks in the text that had no link in the file. */
     val allRefs: List<NoteRef> by lazy {
@@ -13,8 +20,14 @@ data class Block(val kind: Kind, val text: String, val refs: List<NoteRef> = emp
         out.sortedBy { it.start }
     }
 
-    companion object { val BARE_REF = Regex("\\[(\\d{1,3})\\]") }
+    companion object {
+        val BARE_REF = Regex("\\[(\\d{1,3})\\]")
+        const val TABLE_SEP = " │ "
+    }
 }
+
+/** An internal link: characters [start, end) jump to [target] ("file#id"), resolved through [ParsedBook.anchors]. */
+data class Link(val start: Int, val end: Int, val target: String)
 
 /**
  * A footnote reference: characters [start, end) of a block. [id] points into [ParsedBook.notes]
@@ -26,7 +39,15 @@ data class NoteRef(val start: Int, val end: Int, val id: String?, val label: Str
 class TextBuilder {
     private val sb = StringBuilder()
     private val refs = ArrayList<NoteRef>()
+    private val links = ArrayList<Link>()
+    private var linkStart = -1
+    private var linkTarget = ""
     private var space = false
+    /** A hard line break (poems). */
+    fun newline() { if (sb.isNotEmpty() && sb.last() != '\n') sb.append('\n'); space = false }
+    fun beginLink(target: String) { if (space) { sb.append(' '); space = false }; linkStart = sb.length; linkTarget = target }
+    fun endLink() { if (linkStart in 0 until sb.length) links += Link(linkStart, sb.length, linkTarget); linkStart = -1 }
+    fun links(): List<Link> = links.toList()
     fun text(t: String) {
         for (c in t) {
             val ws = c.isWhitespace() || c == '\u00A0'
@@ -42,7 +63,7 @@ class TextBuilder {
         refs += NoteRef(start, sb.length, id, l.trim('[', ']', '{', '}', '(', ')', '*').ifEmpty { l })
     }
     fun isEmpty() = sb.isEmpty()
-    fun build(): Pair<String, List<NoteRef>> = sb.toString() to refs.toList()
+    fun build(): Pair<String, List<NoteRef>> = sb.toString().trimEnd('\n') to refs.toList()
 }
 
 /** Footnote text without the leading back-link label like "1", "[1]", "1." or "↑". */
@@ -58,6 +79,14 @@ data class ParsedBook(
     val cover: ByteArray? = null,
     /** Footnote texts by id. */
     val notes: Map<String, String> = emptyMap(),
+    /** Illustrations by key (see [Block.src]). */
+    val images: Map<String, ByteArray> = emptyMap(),
+    /** Link targets ("file#id" or "#id") → index of the block they point to. */
+    val anchors: Map<String, Int> = emptyMap(),
+    /** The book's own annotation (FB2 annotation, EPUB dc:description), if any. */
+    val description: String = "",
+    val year: String = "",
+    val genres: List<String> = emptyList(),
 ) {
     val wordCount: Int by lazy { blocks.sumOf { countWords(it.text) } }
 }

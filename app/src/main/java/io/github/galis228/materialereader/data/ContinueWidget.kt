@@ -21,6 +21,7 @@ class ContinueWidget : AppWidgetProvider() {
         const val EXTRA_BOOK = "open_book"
 
         fun refresh(ctx: Context) {
+            runCatching { Widgets.refreshAll(ctx) }
             val mgr = AppWidgetManager.getInstance(ctx)
             val ids = runCatching { mgr.getAppWidgetIds(ComponentName(ctx, ContinueWidget::class.java)) }.getOrNull() ?: return
             if (ids.isNotEmpty()) render(ctx, mgr, ids)

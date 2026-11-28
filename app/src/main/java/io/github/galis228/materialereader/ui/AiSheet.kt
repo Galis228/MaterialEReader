@@ -1,6 +1,9 @@
 package io.github.galis228.materialereader.ui
 
-import androidx.compose.ui.text.drawText
+import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.rounded.PushPin
+import androidx.compose.runtime.collectAsState
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -61,14 +64,16 @@ import kotlinx.coroutines.launch
 
 private enum class AiAction(val label: String) {
     EXPLAIN("Объяснить страницу"), SIMPLIFY("Упростить текст"), RECAP("Где я остановился?"), CHAPTER("Пересказ главы"),
-    CHARACTERS("Карта персонажей"), WHO("Кто это?"), ASK("Вопрос"), CARDS("Конспект в карточки"), JOURNAL("Вопрос для дневника"),
+    CHARACTERS("Карта персонажей"), TIMELINE("Хронология"), GLOSSARY("Глоссарий"), REFS("Отсылки на странице"),
+    WHO("Кто это?"), ASK("Вопрос"), CARDS("Конспект в карточки"), JOURNAL("Вопрос для дневника"),
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun AiSheet(
     book: ParsedBook, block: Int, chapterStart: Int, pageText: () -> String, onOpenSettings: () -> Unit, preset: String? = null,
-    onJournal: (question: String, answer: String) -> Unit = { _, _ -> }, onDismiss: () -> Unit,
+    onJournal: (question: String, answer: String) -> Unit = { _, _ -> }, bookId: String = "", chapterTitle: String = "",
+    onDismiss: () -> Unit,
 ) {
     val ctx = LocalContext.current
     val ai = remember { Ai.get(ctx) }
@@ -84,6 +89,9 @@ fun AiSheet(
     var job by remember { mutableStateOf<Job?>(null) }
     var journalAnswer by remember { mutableStateOf("") }
     var journalSaved by remember { mutableStateOf(false) }
+    val history = remember { io.github.galis228.materialereader.ai.AiHistory.get(ctx) }
+    val saved = history.all.collectAsState().value.filter { it.bookId == bookId }
+    var showSaved by remember { mutableStateOf(false) }
     val busy = job?.isActive == true
     val maxH = (LocalConfiguration.current.screenHeightDp * 0.55f).dp
 
@@ -105,6 +113,9 @@ fun AiSheet(
                     AiAction.ASK -> helper.ask(input.trim(), block)
                     AiAction.SIMPLIFY -> helper.simplify(pageText())
                     AiAction.CHARACTERS -> helper.characters(block) { i, n -> status = if (n > 0) "Перечитываю книгу: часть $i из $n…" else "Рисую связи…" }
+                    AiAction.TIMELINE -> helper.timeline(block) { i, n -> status = if (n > 0) "Перечитываю книгу: часть $i из $n…" else "Выстраиваю события…" }
+                    AiAction.GLOSSARY -> helper.glossary(block) { i, n -> status = if (n > 0) "Перечитываю книгу: часть $i из $n…" else "Собираю термины…" }
+                    AiAction.REFS -> helper.references(pageText())
                     AiAction.JOURNAL -> helper.journalQuestion(chapterStart, block)
                     AiAction.CARDS -> {
                         status = "Выделяю главные мысли…"
@@ -122,6 +133,17 @@ fun AiSheet(
                     }
                 }
                 flow.collect { answer = visibleAnswer(it); if (answer.isNotEmpty()) status = null }
+                // plain lines from the model become graphs, timelines and tables here
+                answer = when (a) {
+                    AiAction.CHARACTERS -> helper.charactersMarkdown(answer, block)
+                    AiAction.TIMELINE -> helper.timelineMarkdown(answer)
+                    AiAction.GLOSSARY -> helper.termsMarkdown(answer, "Глоссарий", "Термин")
+                    AiAction.REFS -> helper.termsMarkdown(answer, "Отсылки", "Отсылка")
+                    else -> answer
+                }
+                if (a != AiAction.JOURNAL && bookId.isNotEmpty()) history.add(io.github.galis228.materialereader.ai.AiNote(
+                    System.currentTimeMillis(), bookId, book.title, a.label,
+                    if (a == AiAction.WHO || a == AiAction.ASK) input.trim() else "", answer, block, chapterTitle, System.currentTimeMillis()))
             }.onFailure { if (it !is kotlinx.coroutines.CancellationException) error = it.message ?: "Ошибка модели" }
             status = null
         }
@@ -145,7 +167,14 @@ fun AiSheet(
                     Text("ИИ-помощник", style = MaterialTheme.typography.titleMedium)
                     Text("$label · ${if (online) "через интернет" else "офлайн"} · без спойлеров", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                if (saved.isNotEmpty()) androidx.compose.material3.FilledTonalButton(onClick = { showSaved = !showSaved }) {
+                    Text(if (showSaved) "Назад" else "Сохранённое · ${saved.size}")
+                }
                 IconButton(onClick = onOpenSettings) { Icon(Icons.Rounded.Settings, "Настройки ИИ") }
+            }
+            if (showSaved) {
+                AiNotesList(saved, Modifier.weight(1f, fill = false))
+                return@Column
             }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 AiAction.entries.forEach { a ->
@@ -174,11 +203,10 @@ fun AiSheet(
                     Text(msg, color = MaterialTheme.colorScheme.error)
                     TextButton(onClick = onOpenSettings) { Text("Открыть настройки ИИ") }
                 }
-                if (answer.isNotEmpty() && action == AiAction.CHARACTERS) {
-                    val people = remember(answer) { BookAi.parseCharacters(answer) }
-                    if (people.size >= 2 && !busy) CharacterGraph(people)
-                    SelectionContainer { Text(answer, style = MaterialTheme.typography.bodyMedium) }
-                } else if (answer.isNotEmpty()) SelectionContainer { Text(answer, style = MaterialTheme.typography.bodyLarge) }
+                if (answer.isNotEmpty()) RichAnswer(answer)
+                if (answer.isNotEmpty() && !busy && action != AiAction.JOURNAL && bookId.isNotEmpty())
+                    Text("Сохранено — открыть позже можно в «Сохранённом»", style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
                 if (action == AiAction.JOURNAL && answer.isNotEmpty() && !busy) {
                     Spacer(Modifier.height(8.dp))
                     if (journalSaved) Text("Сохранено в дневник — он в «Главы» → «Цитаты»", color = MaterialTheme.colorScheme.primary)
@@ -197,28 +225,38 @@ fun AiSheet(
     }
 }
 
-/** People as dots on a circle, related ones joined by lines. */
+/** Saved AI results: newest first, pinned on top; tap to open, with pin and delete. */
 @Composable
-private fun CharacterGraph(people: List<Triple<String, String, List<Pair<String, String>>>>) {
-    val measurer = androidx.compose.ui.text.rememberTextMeasurer()
-    val cs = MaterialTheme.colorScheme
-    val names = people.map { it.first }.take(12)
-    fun find(n: String): Int = names.indexOfFirst { it.equals(n, true) || it.split(' ').first().equals(n.split(' ').first(), true) }
-    val edges = people.take(12).flatMapIndexed { i, p -> p.third.mapNotNull { (n, _) -> find(n).takeIf { it >= 0 && it != i }?.let { minOf(i, it) to maxOf(i, it) } } }.distinct()
-    val label = MaterialTheme.typography.labelSmall.copy(color = cs.onSurface)
-    androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().height(260.dp).padding(vertical = 8.dp)) {
-        val c = androidx.compose.ui.geometry.Offset(size.width / 2, size.height / 2)
-        val r = minOf(size.width, size.height) / 2 - 34.dp.toPx()
-        val pts = names.indices.map { i ->
-            val a = 2 * Math.PI * i / names.size - Math.PI / 2
-            androidx.compose.ui.geometry.Offset(c.x + r * kotlin.math.cos(a).toFloat() * 1.25f, c.y + r * kotlin.math.sin(a).toFloat())
-        }
-        for ((a, b) in edges) drawLine(cs.primary.copy(alpha = 0.45f), pts[a], pts[b], strokeWidth = 2.dp.toPx())
-        names.forEachIndexed { i, n ->
-            drawCircle(cs.primary, 7.dp.toPx(), pts[i])
-            val t = measurer.measure(n.take(18), label)
-            drawText(t, topLeft = androidx.compose.ui.geometry.Offset(
-                (pts[i].x - t.size.width / 2).coerceIn(0f, size.width - t.size.width), pts[i].y + 9.dp.toPx()))
+fun AiNotesList(notes: List<io.github.galis228.materialereader.ai.AiNote>, modifier: Modifier = Modifier, showBook: Boolean = false) {
+    val ctx = LocalContext.current
+    val history = remember { io.github.galis228.materialereader.ai.AiHistory.get(ctx) }
+    var open by remember { mutableStateOf<Long?>(null) }
+    val sorted = notes.sortedWith(compareByDescending<io.github.galis228.materialereader.ai.AiNote> { it.pinned }.thenByDescending { it.createdAt })
+    val fmt = remember { java.text.SimpleDateFormat("d MMM, HH:mm", java.util.Locale("ru")) }
+    androidx.compose.foundation.lazy.LazyColumn(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (sorted.isEmpty()) item { Text("Здесь будут результаты ИИ: карты персонажей, хронологии, пересказы и ответы.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        items(sorted.size, key = { sorted[it].id }) { i ->
+            val n = sorted[i]
+            androidx.compose.material3.OutlinedCard(onClick = { open = if (open == n.id) null else n.id }, modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(n.kind + if (n.query.isNotEmpty()) ": ${n.query}" else "", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                            Text(listOfNotNull(if (showBook) n.bookTitle else null, n.chapter.takeIf { it.isNotEmpty() }, fmt.format(java.util.Date(n.createdAt))).joinToString(" · "),
+                                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                        }
+                        IconButton(onClick = { history.togglePin(n.id) }) {
+                            Icon(if (n.pinned) Icons.Rounded.PushPin else Icons.Outlined.PushPin, if (n.pinned) "Открепить" else "Закрепить",
+                                tint = if (n.pinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        IconButton(onClick = { history.remove(n.id) }) { Icon(Icons.Rounded.Delete, "Удалить", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    }
+                    if (open == n.id) { Spacer(Modifier.height(8.dp)); RichAnswer(n.answer) }
+                    else Text(n.answer.lines().firstOrNull { it.isNotBlank() && !it.startsWith("#") && !it.startsWith("```") && !it.startsWith("|") }.orEmpty()
+                        .replace("**", ""), maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
+                }
+            }
         }
     }
 }

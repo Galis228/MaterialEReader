@@ -33,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -141,7 +142,34 @@ fun StatsScreen(onBack: () -> Unit) {
                     finishedThisYear.sortedBy { it.finishedAt }.forEach { Text("· ${it.title}", style = MaterialTheme.typography.bodyMedium) }
                 }
             }
+            Section("Достижения") {
+                val list = remember(rev, books) { io.github.galis228.materialereader.data.Achievements.all(ctx) }
+                Text("Получено ${list.count { it.done }} из ${list.size}", style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant)
+                list.sortedByDescending { it.done }.chunked(2).forEach { row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        row.forEach { a -> Badge(a, Modifier.weight(1f)) }
+                        if (row.size == 1) Spacer(Modifier.weight(1f))
+                    }
+                }
+            }
             Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+@Composable
+private fun Badge(a: io.github.galis228.materialereader.data.Achievement, modifier: Modifier) {
+    val cs = MaterialTheme.colorScheme
+    Card(modifier, shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = if (a.done) cs.tertiaryContainer else cs.surfaceContainerHighest)) {
+        Column(Modifier.padding(12.dp)) {
+            Text(a.icon, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.then(if (a.done) Modifier else Modifier.alpha(0.35f)))
+            Text(a.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(a.hint, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
+            if (!a.done) {
+                LinearProgressIndicator(progress = { a.fraction }, Modifier.fillMaxWidth().padding(top = 6.dp))
+                Text("${a.have} / ${a.need}", style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
+            }
         }
     }
 }

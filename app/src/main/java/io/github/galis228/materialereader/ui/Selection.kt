@@ -101,7 +101,7 @@ fun sentenceAround(text: String, range: IntRange): String {
 fun SelectionSheet(
     blockText: String, blockIndex: Int, initial: IntRange, bookTitle: String,
     highlights: List<Highlight>, onPut: (Highlight) -> Unit, onRemove: (Long) -> Unit,
-    onAskAi: (String) -> Unit, onDismiss: () -> Unit,
+    onAskAi: (String) -> Unit, bookId: String = "", onDismiss: () -> Unit,
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -148,6 +148,8 @@ fun SelectionSheet(
                     "Объясни значение «$selected» в этом предложении: «${sentenceAround(blockText, sel.start until sel.end)}». " +
                         "Одно-два предложения, затем 2–3 синонима.", 0.2f, 300,
                 ).collect { meaning = visibleAnswer(it); status = null }
+                if (bookId.isNotEmpty()) io.github.galis228.materialereader.ai.AiHistory.get(ctx).add(io.github.galis228.materialereader.ai.AiNote(
+                    System.currentTimeMillis(), bookId, bookTitle, "Значение слова", selected, meaning.orEmpty(), blockIndex, "", System.currentTimeMillis()))
             }.onFailure { status = null; meaning = null; error = it.message ?: "ИИ не ответил" }
         }
     }
@@ -227,6 +229,12 @@ fun SelectionSheet(
                     Text(t, style = MaterialTheme.typography.bodyLarge)
                 }
             }
+            // the book's own glossary (made by the AI earlier) answers at once, without asking again
+            val fromGlossary = remember(selected, bookId) { glossaryEntry(ctx, bookId, selected) }
+            fromGlossary?.let { (term, text) ->
+                Text("Из глоссария книги — $term", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                Text(text, style = MaterialTheme.typography.bodyMedium)
+            }
             meaning?.takeIf { it.isNotEmpty() }?.let { m ->
                 Column {
                     Text("Значение", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
@@ -235,4 +243,15 @@ fun SelectionSheet(
             }
         }
     }
+}
+
+/** Looks the selection up in the latest AI glossary of the book: "Термин | Пояснение" table rows. */
+fun glossaryEntry(ctx: android.content.Context, bookId: String, word: String): Pair<String, String>? {
+    if (bookId.isEmpty() || word.isBlank()) return null
+    val note = io.github.galis228.materialereader.ai.AiHistory.get(ctx).latest(bookId, "Глоссарий") ?: return null
+    val stem = io.github.galis228.materialereader.ai.BookAi.stem(word.trim().split(' ').first()).lowercase()
+    if (stem.length < 3) return null
+    val rows = io.github.galis228.materialereader.ai.Rich.parse(note.answer).filterIsInstance<io.github.galis228.materialereader.ai.RichBlock.Table>().flatMap { it.rows }
+    return rows.firstOrNull { r -> r.firstOrNull()?.replace("**", "")?.lowercase()?.split(' ', ',')?.any { it.startsWith(stem) } == true }
+        ?.let { r -> r[0].replace("**", "") to r.getOrElse(1) { "" } }
 }

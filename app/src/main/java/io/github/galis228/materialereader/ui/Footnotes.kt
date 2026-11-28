@@ -68,7 +68,7 @@ fun findFootnote(book: ParsedBook, block: Int, ref: NoteRef): Footnote {
  */
 @Composable
 fun FootnotePanel(
-    note: Footnote, context: String, bookTitle: String, c: PageColors,
+    note: Footnote, context: String, bookTitle: String, c: PageColors, bookId: String, block: Int,
     onGo: (Int) -> Unit, onDismiss: () -> Unit, modifier: Modifier = Modifier,
 ) {
     val ctx = LocalContext.current
@@ -88,6 +88,8 @@ fun FootnotePanel(
                         "Коротко объясни, что здесь, вероятно, нуждается в пояснении: слово, имя, реалия, цитата или перевод."
                 ai.stream("Ты — комментатор книги. Отвечай коротко, 2–4 предложения, на языке книги.", user, 0.2f, 350)
                     .collect { answer = visibleAnswer(it); if (!answer.isNullOrEmpty()) status = null }
+                io.github.galis228.materialereader.ai.AiHistory.get(ctx).add(io.github.galis228.materialereader.ai.AiNote(
+                    System.currentTimeMillis(), bookId, bookTitle, "Сноска", note.label, answer.orEmpty(), block, "", System.currentTimeMillis()))
             }.onFailure { if (it !is kotlinx.coroutines.CancellationException) { status = null; answer = null; status = it.message ?: "ИИ не ответил" } }
         }
     }

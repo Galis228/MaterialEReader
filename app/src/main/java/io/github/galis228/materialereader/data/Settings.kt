@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.map
 enum class ReaderTheme(val label: String) { PAPER("Бумага"), LIGHT("Светлая"), DARK("Тёмная"), NIGHT("Ночь OLED"), YOU("Material You") }
 enum class ReaderFont(val label: String) {
     LITERATA("Literata"), PT_SERIF("PT Serif"), LORA("Lora"), GARAMOND("EB Garamond"),
-    PT_SANS("PT Sans"), FIRA("Fira Sans"), ANDIKA("Andika"),
+    PT_SANS("PT Sans"), FIRA("Fira Sans"), ANDIKA("Andika"), DYSLEXIC("OpenDyslexic — при дислексии"),
     SERIF("Системный с засечками"), SANS("Системный"), MONO("Моно"), CUSTOM("Свой шрифт"),
 }
 enum class ReadMode(val label: String) { SCROLL("Прокрутка"), PAGES("Страницы") }
@@ -64,7 +64,29 @@ data class ReaderSettings(
     val ambientVolume: Float = 0.5f,
     /** Bedtime timer length in minutes. */
     val bedtimeMinutes: Int = 20,
+    /** Large first letter of a chapter. */
+    val dropCap: Boolean = false,
+    /** Hide what lies ahead: later chapters in the contents and the total page count. */
+    val noSpoilers: Boolean = false,
+    /** What a tap does in each of the 9 screen zones (3×3, row by row). */
+    val tapZones: List<TapAction> = TapAction.DEFAULT_ZONES,
+    val doubleTap: TapAction = TapAction.NONE,
+    val twoFingerUp: TapAction = TapAction.NONE,
+    val twoFingerDown: TapAction = TapAction.NONE,
+    /** Color of footnote marks; 0 = a color picked to stand out from the theme. */
+    val noteColor: Long = 0L,
 )
+
+/** Actions for screen zones and gestures. */
+enum class TapAction(val label: String) {
+    NONE("Ничего"), NEXT("Дальше"), PREV("Назад"), MENU("Меню"), BOOKMARK("Закладка"), AI("ИИ"),
+    SEARCH("Поиск"), CONTENTS("Оглавление"), NIGHT("День / ночь"), BACK_IN_HISTORY("Назад по переходам");
+
+    companion object {
+        val DEFAULT_ZONES = listOf(PREV, MENU, NEXT, PREV, MENU, NEXT, PREV, MENU, NEXT)
+        fun parse(s: String?): List<TapAction>? = s?.split(',')?.mapNotNull { runCatching { valueOf(it) }.getOrNull() }?.takeIf { it.size == 9 }
+    }
+}
 
 private val Context.store by preferencesDataStore("reader_settings")
 
@@ -97,6 +119,13 @@ class SettingsRepo(private val ctx: Context) {
         val ambient = stringPreferencesKey("ambient")
         val ambientVol = floatPreferencesKey("ambient_volume")
         val bedtime = androidx.datastore.preferences.core.intPreferencesKey("bedtime_min")
+        val dropCap = booleanPreferencesKey("drop_cap")
+        val noSpoilers = booleanPreferencesKey("no_spoilers")
+        val zones = stringPreferencesKey("tap_zones")
+        val dbl = stringPreferencesKey("double_tap")
+        val twoUp = stringPreferencesKey("two_up")
+        val twoDown = stringPreferencesKey("two_down")
+        val noteColor = androidx.datastore.preferences.core.longPreferencesKey("note_color")
     }
 
     val settings: Flow<ReaderSettings> = ctx.store.data.map { p -> p.toSettings() }
@@ -131,6 +160,13 @@ class SettingsRepo(private val ctx: Context) {
             ambient = this[K.ambient]?.let { runCatching { Ambient.valueOf(it) }.getOrNull() } ?: d.ambient,
             ambientVolume = this[K.ambientVol] ?: d.ambientVolume,
             bedtimeMinutes = this[K.bedtime] ?: d.bedtimeMinutes,
+            dropCap = this[K.dropCap] ?: d.dropCap,
+            noSpoilers = this[K.noSpoilers] ?: d.noSpoilers,
+            tapZones = TapAction.parse(this[K.zones]) ?: d.tapZones,
+            doubleTap = this[K.dbl]?.let { runCatching { TapAction.valueOf(it) }.getOrNull() } ?: d.doubleTap,
+            twoFingerUp = this[K.twoUp]?.let { runCatching { TapAction.valueOf(it) }.getOrNull() } ?: d.twoFingerUp,
+            twoFingerDown = this[K.twoDown]?.let { runCatching { TapAction.valueOf(it) }.getOrNull() } ?: d.twoFingerDown,
+            noteColor = this[K.noteColor] ?: d.noteColor,
         )
     }
 
@@ -145,6 +181,9 @@ class SettingsRepo(private val ctx: Context) {
             it[K.hyph] = s.hyphenate; it[K.bionic] = s.bionic; it[K.autoNight] = s.autoNight; it[K.oneHand] = s.oneHand
             it[K.bilingual] = s.bilingual; it[K.lpm] = s.autoScrollLpm; it[K.ambient] = s.ambient.name
             it[K.ambientVol] = s.ambientVolume; it[K.bedtime] = s.bedtimeMinutes
+            it[K.dropCap] = s.dropCap; it[K.noSpoilers] = s.noSpoilers; it[K.zones] = s.tapZones.joinToString(",") { a -> a.name }
+            it[K.dbl] = s.doubleTap.name; it[K.twoUp] = s.twoFingerUp.name; it[K.twoDown] = s.twoFingerDown.name
+            it[K.noteColor] = s.noteColor
         }
     }
 }

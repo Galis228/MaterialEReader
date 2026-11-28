@@ -239,3 +239,10 @@ fun QuotesTab(book: ParsedBook, highlights: List<Highlight>, onPick: (Highlight)
 
 /** Bionic reading: bold the start of each word. */
 val LocalBionic = androidx.compose.runtime.staticCompositionLocalOf { false }
+
+val LocalDropCap = androidx.compose.runtime.staticCompositionLocalOf { false }
+/** The open book, for blocks that need context (drop caps, illustrations). */
+val LocalBookForCaps = androidx.compose.runtime.staticCompositionLocalOf<io.github.galis228.materialereader.parse.ParsedBook?> { null }
+/** Double-tap action, or null when none is set (so single taps aren't delayed). */
+val LocalDoubleTap = androidx.compose.runtime.staticCompositionLocalOf<((Offset) -> Unit)?> { null }
+val LocalNoteColor = androidx.compose.runtime.staticCompositionLocalOf { Color.Unspecified }

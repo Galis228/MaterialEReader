@@ -1,5 +1,8 @@
 package io.github.galis228.materialereader.ui
 
+import androidx.compose.runtime.collectAsState
+import androidx.compose.material.icons.rounded.BookmarkBorder
+import androidx.compose.material.icons.rounded.Bookmark
 import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
@@ -246,6 +249,13 @@ private fun EntryRow(e: OpdsEntry, busy: Boolean, onNavigate: () -> Unit, onDown
             if (e.acquisitions.isNotEmpty()) Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (busy) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 3.dp)
                 else {
+                    val ctx = androidx.compose.ui.platform.LocalContext.current
+                    val wishes = io.github.galis228.materialereader.data.Wishlist.get(ctx).all.collectAsState().value
+                    val wished = wishes.any { it.id == e.id }
+                    androidx.compose.material3.IconToggleButton(checked = wished, onCheckedChange = { io.github.galis228.materialereader.data.Wishlist.get(ctx).toggle(e) }) {
+                        Icon(if (wished) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder, if (wished) "Убрать из «Хочу прочитать»" else "Хочу прочитать",
+                            tint = if (wished) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                     val best = e.acquisitions.first()
                     Button(onClick = { onDownload(best) }, contentPadding = PaddingValues(horizontal = 14.dp)) { Text("Скачать ${best.label}") }
                     e.acquisitions.drop(1).distinctBy { it.label }.take(2).forEach { a ->

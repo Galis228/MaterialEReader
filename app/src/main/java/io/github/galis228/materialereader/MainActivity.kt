@@ -76,14 +76,29 @@ class MainActivity : ComponentActivity() {
                             onWords = { nav.navigate("words") },
                             onSettings = { nav.navigate("settings") },
                             onStats = { nav.navigate("stats") },
+                            onAiNotes = { nav.navigate("ainotes") },
+                            onSearch = { nav.navigate("search") },
                         )
                     }
+                    composable("ainotes") { io.github.galis228.materialereader.ui.AiNotesScreen(onBack = { nav.popBackStack() }) }
                     composable("stats") { io.github.galis228.materialereader.ui.StatsScreen(onBack = { nav.popBackStack() }) }
-                    composable("reader/{id}") { entry ->
+                    composable(
+                        "reader/{id}?b={b}&c={c}",
+                        arguments = listOf(
+                            androidx.navigation.navArgument("b") { type = androidx.navigation.NavType.IntType; defaultValue = -1 },
+                            androidx.navigation.navArgument("c") { type = androidx.navigation.NavType.IntType; defaultValue = 0 },
+                        ),
+                    ) { entry ->
+                        val b = entry.arguments?.getInt("b") ?: -1
                         ReaderScreen(
                             id = entry.arguments?.getString("id").orEmpty(), onBack = { nav.popBackStack() },
                             onAppSettings = { nav.navigate("settings") },
+                            startAt = if (b >= 0) b to (entry.arguments?.getInt("c") ?: 0) else null,
                         )
+                    }
+                    composable("search") {
+                        io.github.galis228.materialereader.ui.GlobalSearchScreen(onBack = { nav.popBackStack() },
+                            onOpenAt = { id, b, c -> nav.navigate("reader/$id?b=$b&c=$c") })
                     }
                     composable("catalog") {
                         CatalogScreen(onBack = { nav.popBackStack() }, onOpenBook = { id -> nav.navigate("reader/$id") })

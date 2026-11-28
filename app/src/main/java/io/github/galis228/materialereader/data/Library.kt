@@ -66,6 +66,11 @@ data class BookEntry(
     val hidden: Boolean = false,
     /** When the book was finished (by progress or by the mark); 0 = not yet. */
     val finishedAt: Long = 0L,
+    val description: String = "",
+    val year: String = "",
+    val genres: List<String> = emptyList(),
+    /** Printed pages, from online data; 0 = unknown. */
+    val pages: Int = 0,
 ) {
     val started get() = lastOpenedAt > 0L
     val finished get() = when (readMark) { 1 -> true; 2 -> false; else -> progress >= 0.98f }
@@ -125,7 +130,8 @@ class Library private constructor(private val ctx: Context) {
                     ?.let { existing -> return@runCatching existing }
                 file.writeBytes(bytes)
                 val hasCover = book.cover?.let { saveCover(id, it) } ?: false
-                entry = BookEntry(id, book.title, book.author, format, fileName, hasCover, book.blocks.size, book.wordCount, sourceUri = sourceUri)
+                entry = BookEntry(id, book.title, book.author, format, fileName, hasCover, book.blocks.size, book.wordCount, sourceUri = sourceUri,
+                    description = book.description, year = book.year, genres = book.genres)
                 cached = id to book
             }
             mutex.withLock {
@@ -188,10 +194,87 @@ class Library private constructor(private val ctx: Context) {
 
     suspend fun setShelves(id: String, shelves: List<String>) = editBook(id) { it.copy(shelves = shelves.map(String::trim).filter(String::isNotEmpty).distinct()) }
 
+    // ---- Shelves: kept as their own list, so a shelf exists even while it's empty ----
+    private val shelvesFile = File(ctx.filesDir, "shelves.json")
+    private val _shelves = MutableStateFlow(loadShelves())
+    /** All shelves in the person's order. */
+    val shelfList: StateFlow<List<String>> = _shelves.asStateFlow()
+
+    private fun loadShelves(): List<String> {
+        val saved = runCatching { JSONArray(shelvesFile.readText()).let { a -> (0 until a.length()).map { a.getString(it) } } }.getOrNull()
+        return (saved.orEmpty() + _books.value.flatMap { it.shelves }).distinct()
+    }
+    private fun saveShelves() = runCatching { shelvesFile.writeText(JSONArray(_shelves.value).toString()) }
+
+    /** Creates a shelf; returns its name (trimmed), or the existing one with the same name. */
+    fun createShelf(name: String): String? {
+        val n = name.trim().take(40).ifEmpty { return null }
+        _shelves.value.firstOrNull { it.equals(n, true) }?.let { return it }
+        _shelves.value = _shelves.value + n; saveShelves(); return n
+    }
+
+    suspend fun renameShelf(old: String, new: String) {
+        val n = new.trim().take(40)
+        if (n.isEmpty() || n == old) return
+        _shelves.value = _shelves.value.map { if (it == old) n else it }.distinct(); saveShelves()
+        mutex.withLock {
+            _books.update { list -> list.map { b -> if (old in b.shelves) b.copy(shelves = b.shelves.map { if (it == old) n else it }.distinct()) else b } }
+            withContext(Dispatchers.IO) { save() }
+        }
+    }
+
+    suspend fun deleteShelf(name: String) {
+        _shelves.value = _shelves.value - name; saveShelves()
+        mutex.withLock {
+            _books.update { list -> list.map { b -> if (name in b.shelves) b.copy(shelves = b.shelves - name) else b } }
+            withContext(Dispatchers.IO) { save() }
+        }
+    }
+
+    fun moveShelf(name: String, by: Int) {
+        val l = _shelves.value.toMutableList(); val i = l.indexOf(name); val j = (i + by).coerceIn(0, l.lastIndex)
+        if (i < 0 || i == j) return
+        l.removeAt(i); l.add(j, name); _shelves.value = l; saveShelves()
+    }
+
+    suspend fun toggleShelf(id: String, name: String) = editBook(id) { b ->
+        b.copy(shelves = if (name in b.shelves) b.shelves - name else b.shelves + name)
+    }
+
     suspend fun setHidden(id: String, hidden: Boolean) = editBook(id) { it.copy(hidden = hidden) }
 
+    /**
+     * Description, year, genres and page count: first from the book file itself, then from Open Library.
+     * Returns false if nothing new was found.
+     */
+    suspend fun fetchInfo(id: String): Boolean {
+        val e = entry(id) ?: return false
+        var desc = e.description; var year = e.year; var genres = e.genres; var pages = e.pages
+        if (!e.isComic && desc.isEmpty()) runCatching { open(id) }.getOrNull()?.let { b ->
+            desc = b.description; if (year.isEmpty()) year = b.year; if (genres.isEmpty()) genres = b.genres
+        }
+        if (desc.isEmpty() || year.isEmpty() || pages == 0) withContext(Dispatchers.IO) {
+            runCatching {
+                fun enc(s: String) = java.net.URLEncoder.encode(s, "UTF-8")
+                val q = "title=${enc(e.title.substringBefore(" / ").take(80))}" + if (e.author.isNotEmpty()) "&author=${enc(e.author.split(',').first().trim())}" else ""
+                val doc = JSONObject(String(Opds.get("https://openlibrary.org/search.json?$q&limit=1&fields=key,first_publish_year,number_of_pages_median,subject"), Charsets.UTF_8))
+                    .optJSONArray("docs")?.optJSONObject(0) ?: return@runCatching
+                if (year.isEmpty()) year = doc.optInt("first_publish_year").takeIf { it > 0 }?.toString().orEmpty()
+                if (pages == 0) pages = doc.optInt("number_of_pages_median")
+                if (genres.isEmpty()) genres = doc.optJSONArray("subject")?.let { a -> (0 until minOf(a.length(), 5)).map { a.getString(it) } }.orEmpty()
+                if (desc.isEmpty()) doc.optString("key").takeIf { it.startsWith("/works/") }?.let { key ->
+                    val w = JSONObject(String(Opds.get("https://openlibrary.org$key.json"), Charsets.UTF_8))
+                    desc = (w.opt("description") as? JSONObject)?.optString("value") ?: w.optString("description")
+                }
+            }
+        }
+        if (desc == e.description && year == e.year && genres == e.genres && pages == e.pages) return false
+        editBook(id) { it.copy(description = desc.trim().take(3000), year = year, genres = genres, pages = pages) }
+        return true
+    }
+
     /** Re-reads the index after a backup was restored. */
-    suspend fun reload() = mutex.withLock { _books.value = load() }
+    suspend fun reload() { mutex.withLock { _books.value = load() }; _shelves.value = loadShelves() }
 
     /** Replaces the cover with an image (any format Android can decode). */
     suspend fun setCover(id: String, bytes: ByteArray): Boolean {
@@ -224,6 +307,7 @@ class Library private constructor(private val ctx: Context) {
         _books.update { list -> list.filterNot { it.id == id } }
         withContext(Dispatchers.IO) {
             bookFile(e).delete(); coverFile(id).delete(); save()
+            io.github.galis228.materialereader.ai.AiHistory.get(ctx).removeBook(id)
             // remember deleted scanned files so the scanner doesn't bring them back
             e.sourceUri?.let { ignored = ignored + it }
         }
@@ -321,6 +405,7 @@ class Library private constructor(private val ctx: Context) {
             put("readMark", b.readMark); put("coverRev", b.coverRev)
             put("shelves", JSONArray(b.shelves)); put("series", b.series); put("seriesIndex", b.seriesIndex.toDouble())
             put("hidden", b.hidden); put("finishedAt", b.finishedAt)
+            put("description", b.description); put("year", b.year); put("genres", JSONArray(b.genres)); put("pages", b.pages)
             put("highlights", JSONArray().apply {
                 b.highlights.forEach { h -> put(JSONObject().put("block", h.block).put("color", h.color).put("note", h.note).put("created", h.createdAt).put("start", h.start).put("end", h.end)) }
             })
@@ -362,6 +447,9 @@ class Library private constructor(private val ctx: Context) {
                     o.optJSONArray("shelves")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList(),
                     o.optString("series"), o.optDouble("seriesIndex", 0.0).toFloat(),
                     o.optBoolean("hidden"), o.optLong("finishedAt"),
+                    o.optString("description"), o.optString("year"),
+                    o.optJSONArray("genres")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList(),
+                    o.optInt("pages"),
                 )
             }.getOrNull()
         }

@@ -41,7 +41,21 @@ object Fb2Parser {
         // Main body only (notes bodies have name="notes"/"comments")
         val allBodies = doc.select("FictionBook > body").ifEmpty { doc.select("body") }
         val bodies = allBodies.filter { it.attr("name").isEmpty() }.ifEmpty { allBodies.take(1) }
-        for (body in bodies) walk(body, blocks)
+        val anchors = HashMap<String, Int>()
+        val wanted = LinkedHashSet<String>()
+        for (body in bodies) walk(body, blocks, anchors, wanted)
+        val images = HashMap<String, ByteArray>()
+        var total = 0L
+        for (id in wanted) {
+            val bin = doc.select("binary").firstOrNull { it.attr("id") == id } ?: continue
+            val data = runCatching { Base64.getMimeDecoder().decode(bin.text()) }.getOrNull() ?: continue
+            if (data.size > 6_000_000 || total + data.size > 80_000_000) continue
+            images[id] = data; total += data.size
+        }
+        val shown = blocks.filter { it.kind != Block.Kind.IMAGE || it.src in images }
+        val shift = IntArray(blocks.size + 1).also { a -> var d = 0; blocks.forEachIndexed { i, b -> a[i] = i - d; if (b.kind == Block.Kind.IMAGE && b.src !in images) d++ }; a[blocks.size] = blocks.size - d }
+        blocks.clear(); blocks.addAll(shown)
+        anchors.replaceAll { _, v -> shift[v.coerceIn(0, shift.lastIndex)] }
         // Footnotes: sections with an id inside the notes bodies
         val notes = HashMap<String, String>()
         for (b in allBodies.filter { it.attr("name").isNotEmpty() }) {
@@ -51,11 +65,18 @@ object Fb2Parser {
                 if (text.isNotEmpty()) notes[sec.attr("id")] = cleanNote(text)
             }
         }
-        return ParsedBook(title, author, blocks, chaptersFromHeadings(blocks, title), cover, notes)
+        return ParsedBook(title, author, blocks, chaptersFromHeadings(blocks, title), cover, notes, images, anchors,
+            description = titleInfo?.selectFirst("annotation")?.text()?.normalizeSpace().orEmpty().take(3000),
+            year = (titleInfo?.selectFirst("date")?.let { it.attr("value").ifEmpty { it.text() } } ?: doc.selectFirst("publish-info > year")?.text()).orEmpty()
+                .let { Regex("\\d{4}").find(it)?.value.orEmpty() },
+            genres = titleInfo?.select("genre")?.map { it.text().trim() }?.filter { it.isNotEmpty() }.orEmpty().take(6))
     }
 
-    private fun walk(el: Element, out: MutableList<Block>) {
+    private fun href(e: Element) = e.attributes().asList().firstOrNull { it.key.endsWith("href") }?.value.orEmpty()
+
+    private fun walk(el: Element, out: MutableList<Block>, anchors: MutableMap<String, Int>, wanted: MutableSet<String>) {
         for (child in el.children()) {
+            if (child.id().isNotEmpty()) anchors.putIfAbsent("#" + child.id(), out.size)
             when (child.tagName()) {
                 "title" -> {
                     val t = child.select("p").joinToString(". ") { it.text().normalizeSpace() }
@@ -63,7 +84,7 @@ object Fb2Parser {
                     if (t.isNotEmpty()) out += Block(Block.Kind.HEADING, t)
                 }
                 "p", "subtitle" -> paragraph(child, Block.Kind.PARAGRAPH)?.let { out += it }
-                "v" -> paragraph(child, Block.Kind.QUOTE)?.let { out += it }
+                "v" -> paragraph(child, Block.Kind.VERSE)?.let { out += it }
                 "empty-line" -> {}
                 "epigraph" -> child.select("p, text-author").forEach { p ->
                     p.text().normalizeSpace().takeIf { it.isNotEmpty() }?.let { out += Block(Block.Kind.EPIGRAPH, it) }
@@ -71,31 +92,49 @@ object Fb2Parser {
                 "cite" -> child.select("p, v, text-author").forEach { p ->
                     p.text().normalizeSpace().takeIf { it.isNotEmpty() }?.let { out += Block(Block.Kind.QUOTE, it) }
                 }
-                "section", "poem", "stanza" -> walk(child, out)
-                "image", "annotation" -> {}
-                else -> walk(child, out)
+                "stanza" -> {
+                    // a stanza: its lines in one block, line breaks kept
+                    val tb = TextBuilder()
+                    child.children().filter { it.tagName() == "v" }.forEach { v -> tb.newline(); paragraphInto(v, tb) }
+                    val (text, refs) = tb.build()
+                    if (text.isNotBlank()) out += Block(Block.Kind.VERSE, text.trim(), refs)
+                }
+                "image" -> href(child).removePrefix("#").takeIf { it.isNotEmpty() }?.let { id ->
+                    wanted += id; out += Block(Block.Kind.IMAGE, child.attr("title").ifEmpty { child.attr("alt") }, src = id)
+                }
+                "table" -> {
+                    val rows = child.select("tr").map { tr -> tr.children().map { it.text().normalizeSpace() } }.filter { r -> r.any { it.isNotEmpty() } }
+                    if (rows.isNotEmpty()) out += Block(Block.Kind.TABLE, rows.joinToString("\n") { it.joinToString(Block.TABLE_SEP) })
+                }
+                "section", "poem" -> walk(child, out, anchors, wanted)
+                "annotation" -> {}
+                else -> walk(child, out, anchors, wanted)
             }
         }
     }
 
-    /** Paragraph text with footnote links: <a l:href="#n1" type="note">[1]</a>. */
+    /** Paragraph text with footnote links: <a l:href="#n1" type="note">[1]</a>, and links to other places. */
     private fun paragraph(el: Element, kind: Block.Kind): Block? {
         val tb = TextBuilder()
-        fun walkInline(e: Element) {
-            for (n in e.childNodes()) when (n) {
-                is org.jsoup.nodes.TextNode -> tb.text(n.wholeText)
-                is Element -> {
-                    val href = n.attributes().asList().firstOrNull { it.key.endsWith("href") }?.value.orEmpty()
-                    if (n.tagName() == "a" && href.startsWith("#") && (n.attr("type") == "note" || n.text().trim().matches(NOTE_LABEL)))
+        paragraphInto(el, tb)
+        if (tb.isEmpty()) return null
+        val (text, refs) = tb.build()
+        return Block(kind, text, refs, links = tb.links())
+    }
+
+    private fun paragraphInto(e: Element, tb: TextBuilder) {
+        for (n in e.childNodes()) when (n) {
+            is org.jsoup.nodes.TextNode -> tb.text(n.wholeText)
+            is Element -> {
+                val href = href(n)
+                when {
+                    n.tagName() == "a" && href.startsWith("#") && (n.attr("type") == "note" || n.text().trim().matches(NOTE_LABEL)) ->
                         tb.ref(n.text(), href.removePrefix("#"))
-                    else walkInline(n)
+                    n.tagName() == "a" && href.startsWith("#") -> { tb.beginLink(href); paragraphInto(n, tb); tb.endLink() }
+                    else -> paragraphInto(n, tb)
                 }
             }
         }
-        walkInline(el)
-        if (tb.isEmpty()) return null
-        val (text, refs) = tb.build()
-        return Block(kind, text, refs)
     }
 
     private val NOTE_LABEL = Regex("^[\\[({]?\\*?\\d{0,3}\\*?[\\])}]?$")

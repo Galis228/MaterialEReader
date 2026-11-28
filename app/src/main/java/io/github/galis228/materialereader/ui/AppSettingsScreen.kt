@@ -225,6 +225,10 @@ fun AppSettingsScreen(onBack: () -> Unit) {
             item { AiSettingsBlock() }
             item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
 
+            item { Section("Напоминание почитать") }
+            item { ReminderBlock() }
+            item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
+
             item { Section("Резервная копия") }
             item {
                 ListItem(
@@ -537,4 +541,30 @@ private fun ModelDownloadsCard(onReady: () -> Unit) {
             }
         }
     }
+}
+
+@Composable
+private fun ReminderBlock() {
+    val ctx = LocalContext.current
+    var on by remember { mutableStateOf(io.github.galis228.materialereader.data.Reminders.enabled(ctx)) }
+    var h by remember { mutableStateOf(io.github.galis228.materialereader.data.Reminders.hour(ctx)) }
+    var m by remember { mutableStateOf(io.github.galis228.materialereader.data.Reminders.minute(ctx)) }
+    val askPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        on = granted; io.github.galis228.materialereader.data.Reminders.set(ctx, granted, h, m)
+    }
+    ListItem(
+        headlineContent = { Text("Каждый день в %02d:%02d".format(h, m)) },
+        supportingContent = { Text("Только если сегодня ещё не читал — чтобы не прервалась серия дней") },
+        trailingContent = {
+            androidx.compose.material3.Switch(checked = on, onCheckedChange = { want ->
+                if (want && android.os.Build.VERSION.SDK_INT >= 33 &&
+                    ctx.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+                    askPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                else { on = want; io.github.galis228.materialereader.data.Reminders.set(ctx, want, h, m) }
+            })
+        },
+        modifier = Modifier.clickable {
+            android.app.TimePickerDialog(ctx, { _, hh, mm -> h = hh; m = mm; io.github.galis228.materialereader.data.Reminders.set(ctx, on, hh, mm) }, h, m, true).show()
+        },
+    )
 }

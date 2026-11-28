@@ -7,7 +7,8 @@ import kotlinx.coroutines.flow.Flow
 class BookAi(private val ai: Ai, private val book: ParsedBook) {
 
     private val system = "Ты — помощник читателя книги «${book.title}». Отвечай по-русски, коротко и по делу. " +
-        "Опирайся только на данный фрагмент книги. Не придумывай событий и не рассказывай, что будет дальше."
+        "Опирайся только на данный фрагмент книги. Не придумывай событий и не рассказывай, что будет дальше. " +
+        "Оформляй ответ в Markdown: короткие абзацы, списки, главное **жирным**, таблица — если что-то сравниваешь."
 
     private fun text(from: Int, to: Int) = buildString {
         for (i in from.coerceAtLeast(0) until to.coerceAtMost(book.blocks.size)) { append(book.blocks[i].text); append('\n') }
@@ -106,6 +107,70 @@ class BookAi(private val ai: Ai, private val book: ParsedBook) {
         return ai.complete(system, "Выдели 3–7 ключевых мыслей этого фрагмента. Каждая строка строго в формате:\n" +
             "Короткая мысль — пояснение в одном-двух предложениях\nБез нумерации и вступления.\n\n$t", maxOut = 600)
     }
+
+    /** Key events read so far, in order, one per line: "Когда — что произошло". */
+    suspend fun timeline(block: Int, onStep: (Int, Int) -> Unit): Flow<String> {
+        val material = condensed(block, "Перечисли по порядку главные события этого фрагмента, кратко.", onStep)
+        return ai.stream(system, "Составь хронологию событий по прочитанному, по порядку. Каждая строка строго в формате:\n" +
+            "Когда (глава, время или момент) — что произошло, одной фразой\nОт 5 до 12 строк, без вступления.\n\n$material", maxOut = 700)
+    }
+
+    /** Allusions on the page: quotes, myths, historical events, other books. "Отсылка — пояснение" per line. */
+    suspend fun references(pageText: String): Flow<String> {
+        val t = pageText.take(ai.budgetChars())
+        return ai.stream(system, "Найди в тексте отсылки: цитаты, мифы, исторические события и лица, другие книги, реалии эпохи, иностранные фразы. " +
+            "Каждая строка строго в формате:\nОтсылка — что это и зачем она здесь, одним-двумя предложениями\n" +
+            "Если отсылок нет, так и напиши одной фразой.\n\nТекст:\n$t", maxOut = 600)
+    }
+
+    /** Names, places and terms of the book read so far. "Термин — пояснение" per line. */
+    suspend fun glossary(block: Int, onStep: (Int, Int) -> Unit): Flow<String> {
+        val material = condensed(block, "Выпиши имена, места, организации и необычные термины этого фрагмента с пояснением, кратко.", onStep)
+        return ai.stream(system, "Составь глоссарий книги по прочитанному: персонажи, места, термины, устаревшие слова. Каждая строка строго в формате:\n" +
+            "Термин — пояснение в одном предложении\nДо 25 строк, без вступления.\n\n$material", maxOut = 900)
+    }
+
+    /** The read part if it fits; otherwise evenly spread pieces condensed by [instruction] first. */
+    private suspend fun condensed(block: Int, instruction: String, onStep: (Int, Int) -> Unit): String {
+        val budget = ai.budgetChars()
+        val read = text(0, block + 1)
+        if (read.length <= budget) { onStep(0, 0); return read }
+        val n = (read.length / budget).coerceIn(2, 6)
+        val step = (read.length - budget) / (n - 1).coerceAtLeast(1)
+        val notes = (0 until n).map { i ->
+            onStep(i + 1, n)
+            val from = (i * step).coerceAtMost(read.length - budget)
+            ai.complete(system, "$instruction\n\n${read.substring(from, (from + budget).coerceAtMost(read.length))}", maxOut = 260)
+        }
+        onStep(0, 0)
+        return notes.joinToString("\n")
+    }
+
+    /**
+     * Turns the plain lines small models produce into pictures: the character map becomes a graph, a table and a
+     * chart of how often each one is mentioned (counted in the text, not guessed).
+     */
+    fun charactersMarkdown(answer: String, block: Int): String {
+        val people = parseCharacters(answer)
+        if (people.size < 2) return answer
+        val names = people.map { it.first }
+        fun match(n: String) = names.firstOrNull { it.equals(n, true) } ?: names.firstOrNull { it.split(' ').first().equals(n.split(' ').first(), true) } ?: n
+        val edges = people.flatMap { (who, _, links) -> links.map { (other, rel) -> Edge(who, match(other), rel) } }
+            .distinctBy { setOf(it.from, it.to) }
+        val read = text(0, block + 1)
+        val mentions = names.map { n -> n to Regex(Regex.escape(stem(n.split(' ').first())), RegexOption.IGNORE_CASE).findAll(read).count() }
+            .filter { it.second > 0 }.sortedByDescending { it.second }
+        return buildString {
+            append("## Связи\n\n").append(Rich.graph(edges, names.filter { n -> edges.none { it.from == n || it.to == n } })).append("\n\n")
+            append("## Кто есть кто\n\n").append(Rich.table(listOf("Персонаж", "Кто это"), people.map { listOf("**${it.first}**", it.second) })).append('\n')
+            if (mentions.size >= 2) append("## Как часто упоминаются\n\n").append(Rich.chart("Упоминаний в прочитанном", mentions)).append('\n')
+        }
+    }
+
+    fun timelineMarkdown(answer: String): String = parsePoints(answer).let { if (it.size < 2) answer else "## Хронология\n\n" + Rich.timeline(it) }
+
+    fun termsMarkdown(answer: String, title: String, header: String): String =
+        parsePoints(answer).let { if (it.isEmpty()) answer else "## $title\n\n" + Rich.table(listOf(header, "Пояснение"), it.map { (a, b) -> listOf("**$a**", b) }) }
 
     /** One question about the chapter for the reading journal. */
     suspend fun journalQuestion(chapterStart: Int, block: Int): Flow<String> {

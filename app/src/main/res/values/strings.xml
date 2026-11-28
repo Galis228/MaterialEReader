@@ -2,4 +2,10 @@
     <string name="app_name">Material eReader</string>
     <string name="widget_description">Текущая книга и кнопка «Продолжить»</string>
     <string name="widget_name">Продолжить чтение</string>
+    <string name="widget_streak_name">Серия дней</string>
+    <string name="widget_streak_description">Сколько дней подряд ты читаешь</string>
+    <string name="widget_goal_name">Цель на год</string>
+    <string name="widget_goal_description">Сколько книг прочитано из цели</string>
+    <string name="widget_quote_name">Цитата дня</string>
+    <string name="widget_quote_description">Одна из твоих цитат, каждый день новая</string>
 </resources>

@@ -74,6 +74,7 @@ private val lora by lazy { variable(R.font.lora, R.font.lora_italic) }
 private val garamond by lazy { variable(R.font.ebgaramond, R.font.ebgaramond_italic) }
 private val ptSerif by lazy { FontFamily(Font(R.font.ptserif_regular), Font(R.font.ptserif_italic, style = FontStyle.Italic), Font(R.font.ptserif_bold, FontWeight.Bold), Font(R.font.ptserif_bold, FontWeight.SemiBold)) }
 private val ptSans by lazy { FontFamily(Font(R.font.ptsans_regular), Font(R.font.ptsans_italic, style = FontStyle.Italic), Font(R.font.ptsans_bold, FontWeight.Bold), Font(R.font.ptsans_bold, FontWeight.SemiBold)) }
+private val dyslexic by lazy { FontFamily(Font(R.font.opendyslexic_regular), Font(R.font.opendyslexic_italic, style = FontStyle.Italic), Font(R.font.opendyslexic_bold, FontWeight.Bold), Font(R.font.opendyslexic_bold, FontWeight.SemiBold)) }
 private val andika by lazy { FontFamily(Font(R.font.andika_regular), Font(R.font.andika_italic, style = FontStyle.Italic), Font(R.font.andika_bold, FontWeight.Bold), Font(R.font.andika_bold, FontWeight.SemiBold)) }
 private val fira by lazy { FontFamily(Font(R.font.firasans_regular), Font(R.font.firasans_italic, style = FontStyle.Italic), Font(R.font.firasans_semibold, FontWeight.SemiBold), Font(R.font.firasans_semibold, FontWeight.Bold)) }
 
@@ -91,6 +92,7 @@ fun ReaderFont.family(): FontFamily = when (this) {
     ReaderFont.PT_SANS -> ptSans
     ReaderFont.FIRA -> fira
     ReaderFont.ANDIKA -> andika
+    ReaderFont.DYSLEXIC -> dyslexic
     ReaderFont.SERIF -> FontFamily.Serif
     ReaderFont.SANS -> FontFamily.SansSerif
     ReaderFont.MONO -> FontFamily.Monospace

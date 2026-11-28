@@ -69,11 +69,19 @@ object MobiParser {
         val html = String(out.toByteArray(), if (utf8) Charsets.UTF_8 else charset("windows-1252"))
             .replace(Regex("<mbp:pagebreak\\s*/?>", RegexOption.IGNORE_CASE), "")
 
-        val blocks = EpubParser.htmlBlocks(html)
+        // pictures are numbered records: <img recindex="00003"> → the 3rd image record
+        val html2 = html.replace(Regex("recindex=[\"']?(\\d+)[\"']?", RegexOption.IGNORE_CASE)) { "src=\"rec/${it.groupValues[1].trimStart('0').ifEmpty { "0" }}\"" }
+        val parsed = EpubParser.htmlBlocks(html2)
+        val images = HashMap<String, ByteArray>()
+        if (firstImage > 0) for (b in parsed) if (b.kind == Block.Kind.IMAGE && b.src.startsWith("rec/")) {
+            val idx = firstImage + (b.src.removePrefix("rec/").toIntOrNull() ?: continue) - 1
+            if (idx in 0 until n && b.src !in images) images[b.src] = record(idx)
+        }
+        val blocks = parsed.filter { it.kind != Block.Kind.IMAGE || it.src in images }
         val chapters = blocks.withIndex().filter { it.value.kind == Block.Kind.HEADING }.map { Chapter(it.value.text.take(120), it.index) }
             .ifEmpty { listOf(Chapter(title, 0)) }
         val cover = if (firstImage > 0 && coverOffset >= 0 && firstImage + coverOffset < n) record(firstImage + coverOffset) else null
-        return ParsedBook(title.ifBlank { fileName.substringBeforeLast('.') }, author, blocks, chapters, cover)
+        return ParsedBook(title.ifBlank { fileName.substringBeforeLast('.') }, author, blocks, chapters, cover, images = images)
     }
 
     /** Size of the extra entries at the end of a text record (multibyte flag and indexing data). */

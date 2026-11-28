@@ -20,10 +20,10 @@ object BookParser {
      * ("IV", "12") become headings, so both are drawn centered instead of as indented paragraphs.
      */
     fun tidy(b: Block): Block {
-        if (b.kind == Block.Kind.HEADING || b.kind == Block.Kind.SEPARATOR) return b
+        if (b.kind != Block.Kind.PARAGRAPH && b.kind != Block.Kind.QUOTE && b.kind != Block.Kind.EPIGRAPH) return b
         val t = b.text.trim()
         if (t.isNotEmpty() && t.any { !it.isWhitespace() && it != '.' } && separatorRe.matches(t)) return Block(Block.Kind.SEPARATOR, "* * *")
-        if (b.kind == Block.Kind.PARAGRAPH && numberHeadingRe.matches(t)) return Block(Block.Kind.HEADING, t, b.refs)
+        if (b.kind == Block.Kind.PARAGRAPH && numberHeadingRe.matches(t)) return b.copy(kind = Block.Kind.HEADING, text = t)
         return b
     }
 

@@ -1,5 +1,9 @@
 package io.github.galis228.materialereader.ui
 
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -137,6 +141,8 @@ fun TextSettingsSheet(s: ReaderSettings, onChange: (ReaderSettings) -> Unit, onD
                     ColorRow(TextPalette, s.textColor) { onChange(s.copy(textColor = it)) }
                     Text("Цвет фона", style = MaterialTheme.typography.titleSmall)
                     ColorRow(BgPalette, s.bgColor) { onChange(s.copy(bgColor = it)) }
+                    Text("Цвет сносок", style = MaterialTheme.typography.titleSmall)
+                    ColorRow(NotePalette, s.noteColor) { onChange(s.copy(noteColor = it)) }
                 }
                 1 -> {
                     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
@@ -163,6 +169,8 @@ fun TextSettingsSheet(s: ReaderSettings, onChange: (ReaderSettings) -> Unit, onD
                     SwitchRow("Выравнивание по ширине", s.justify) { onChange(s.copy(justify = it)) }
                     SwitchRow("Перенос слов", s.hyphenate) { onChange(s.copy(hyphenate = it)) }
                     SwitchRow("Бионическое чтение (начала слов жирным)", s.bionic) { onChange(s.copy(bionic = it)) }
+                    SwitchRow("Буквица в начале главы", s.dropCap) { onChange(s.copy(dropCap = it)) }
+                    SwitchRow("Без спойлеров: скрыть следующие главы и число страниц", s.noSpoilers) { onChange(s.copy(noSpoilers = it)) }
                     if (s.mode == ReadMode.SCROLL) {
                         SwitchRow("Двуязычный режим: перевод под абзацами", s.bilingual) { onChange(s.copy(bilingual = it)) }
                         LabeledSlider("Скорость автопрокрутки", s.autoScrollLpm, 4f..60f, { "${it.roundToInt()} строк/мин" }) {
@@ -176,6 +184,15 @@ fun TextSettingsSheet(s: ReaderSettings, onChange: (ReaderSettings) -> Unit, onD
                     SwitchRow("Листать кнопками громкости", s.volumeKeys) { onChange(s.copy(volumeKeys = it)) }
                     SwitchRow("Не гасить экран", s.keepScreenOn) { onChange(s.copy(keepScreenOn = it)) }
                     SwitchRow("Одной рукой: тап в любом месте — дальше, у левого края — назад", s.oneHand) { onChange(s.copy(oneHand = it)) }
+                    if (!s.oneHand) {
+                        Text("Зоны тапов", style = MaterialTheme.typography.titleSmall)
+                        TapZonesEditor(s.tapZones) { onChange(s.copy(tapZones = it)) }
+                    }
+                    ActionRow("Двойной тап", s.doubleTap) { onChange(s.copy(doubleTap = it)) }
+                    ActionRow("Два пальца вверх", s.twoFingerUp) { onChange(s.copy(twoFingerUp = it)) }
+                    ActionRow("Два пальца вниз", s.twoFingerDown) { onChange(s.copy(twoFingerDown = it)) }
+                    Text("Щипок двумя пальцами меняет размер шрифта", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                     SwitchRow("Ночная тема с 21:00 до 7:00", s.autoNight) { onChange(s.copy(autoNight = it)) }
                     Text("Фоновый звук", style = MaterialTheme.typography.titleSmall)
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -222,6 +239,7 @@ fun TocSheet(
     onPick: (Int) -> Unit, onPickBookmark: (Bookmark) -> Unit, onDeleteBookmark: (Bookmark) -> Unit,
     highlights: List<io.github.galis228.materialereader.data.Highlight> = emptyList(),
     onPickHighlight: (io.github.galis228.materialereader.data.Highlight) -> Unit = {},
+    noSpoilers: Boolean = false,
     onDismiss: () -> Unit,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -236,7 +254,7 @@ fun TocSheet(
         } else if (tab == 0) {
             val state = rememberLazyListState((current - 3).coerceAtLeast(0))
             LazyColumn(state = state, modifier = Modifier.navigationBarsPadding()) {
-                itemsIndexed(book.chapters) { i, ch ->
+                itemsIndexed(if (noSpoilers) book.chapters.take(current + 1) else book.chapters) { i, ch ->
                     val selected = i == current
                     Row(
                         Modifier.fillMaxWidth().clickable { onPick(i) }
@@ -247,8 +265,12 @@ fun TocSheet(
                         Text(ch.title, Modifier.weight(1f), fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                             maxLines = 2, overflow = TextOverflow.Ellipsis)
                         val pct = if (book.blocks.size > 1) ch.startBlock * 100 / (book.blocks.size - 1) else 0
-                        Text("$pct%", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium)
+                        if (!noSpoilers) Text("$pct%", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium)
                     }
+                }
+                if (noSpoilers && current < book.chapters.lastIndex) item {
+                    Text("Дальше скрыто — режим без спойлеров", color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp))
                 }
             }
         } else if (bookmarks.isEmpty()) {
@@ -279,6 +301,7 @@ fun TocSheet(
 
 private val TextPalette = listOf(0xFF111111, 0xFF2B2118, 0xFF3E2C1C, 0xFF1F2A44, 0xFF23402B, 0xFF5B1F1F,
     0xFFE8E4DC, 0xFFB9B4AA, 0xFFF2D9A0, 0xFFA8D3AE, 0xFF9DB4FF, 0xFFFFB3A7)
+private val NotePalette = listOf(0xFF00897B, 0xFF4DD0C0, 0xFF1E88E5, 0xFF8E24AA, 0xFFD81B60, 0xFFE53935, 0xFFF4511E, 0xFF43A047)
 private val BgPalette = listOf(0xFFFFFFFF, 0xFFFBF8F1, 0xFFF4EAD6, 0xFFE9DCC0, 0xFFE4EEDF, 0xFFE3ECF7,
     0xFF2A2A2E, 0xFF1E2A22, 0xFF1B2233, 0xFF2B2018, 0xFF121212, 0xFF000000)
 
@@ -335,6 +358,61 @@ private fun FontPicker(s: ReaderSettings, onChange: (ReaderSettings) -> Unit) {
                 },
                 label = { Text(if (f == ReaderFont.CUSTOM) "+ Свой шрифт…" else "Аа ${f.label}", fontFamily = if (f == ReaderFont.CUSTOM) null else f.family()) },
             )
+        }
+    }
+}
+
+/** The screen as a 3×3 grid; tap a cell to choose what a tap there does. */
+@Composable
+private fun TapZonesEditor(zones: List<io.github.galis228.materialereader.data.TapAction>, onChange: (List<io.github.galis228.materialereader.data.TapAction>) -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { Column(
+        Modifier.fillMaxWidth(0.62f).aspectRatio(0.62f).clip(androidx.compose.foundation.shape.RoundedCornerShape(18.dp))
+            .border(BorderStroke(2.dp, cs.outlineVariant), androidx.compose.foundation.shape.RoundedCornerShape(18.dp)),
+    ) {
+        for (row in 0 until 3) Row(Modifier.weight(1f)) {
+            for (col in 0 until 3) {
+                val i = row * 3 + col
+                var open by remember { mutableStateOf(false) }
+                val a = zones.getOrElse(i) { io.github.galis228.materialereader.data.TapAction.NONE }
+                Box(
+                    Modifier.weight(1f).fillMaxHeight().border(BorderStroke(0.5.dp, cs.outlineVariant))
+                        .background(when (a) {
+                            io.github.galis228.materialereader.data.TapAction.NEXT -> cs.primaryContainer
+                            io.github.galis228.materialereader.data.TapAction.PREV -> cs.secondaryContainer
+                            io.github.galis228.materialereader.data.TapAction.NONE -> cs.surface
+                            else -> cs.tertiaryContainer
+                        })
+                        .clickable { open = true },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(a.label, style = MaterialTheme.typography.labelSmall, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.padding(2.dp))
+                    androidx.compose.material3.DropdownMenu(open, { open = false }) {
+                        io.github.galis228.materialereader.data.TapAction.entries.forEach { opt ->
+                            androidx.compose.material3.DropdownMenuItem({ Text(opt.label) }, onClick = {
+                                open = false; onChange(zones.toMutableList().also { it[i] = opt })
+                            })
+                        }
+                    }
+                }
+            }
+        }
+    } }
+    TextButton(onClick = { onChange(io.github.galis228.materialereader.data.TapAction.DEFAULT_ZONES) }) { Text("Как было") }
+}
+
+@Composable
+private fun ActionRow(label: String, value: io.github.galis228.materialereader.data.TapAction, onPick: (io.github.galis228.materialereader.data.TapAction) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Row(Modifier.fillMaxWidth().clickable { open = true }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, Modifier.weight(1f))
+        Box {
+            Text(value.label, color = MaterialTheme.colorScheme.primary)
+            androidx.compose.material3.DropdownMenu(open, { open = false }) {
+                io.github.galis228.materialereader.data.TapAction.entries.forEach { opt ->
+                    androidx.compose.material3.DropdownMenuItem({ Text(opt.label) }, onClick = { open = false; onPick(opt) })
+                }
+            }
         }
     }
 }

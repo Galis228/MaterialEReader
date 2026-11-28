@@ -56,6 +56,16 @@ fun blockSpec(kind: Block.Kind, s: ReaderSettings, color: androidx.compose.ui.gr
             0f, 8 * dp, 64 * dp, 0f,
         )
         Block.Kind.SEPARATOR -> BlockSpec(base.copy(textAlign = TextAlign.Center, color = muted), 16 * dp, 16 * dp, 0f, 0f)
+        Block.Kind.VERSE -> BlockSpec(
+            base.copy(textAlign = TextAlign.Start, hyphens = Hyphens.None, lineBreak = LineBreak.Simple, textIndent = TextIndent.None),
+            s.fontSize * 0.3f * dp, s.fontSize * 0.8f * dp, 28 * dp, 0f,
+        )
+        Block.Kind.TABLE -> BlockSpec(
+            base.copy(fontSize = (s.fontSize * 0.82f).sp, lineHeight = (s.fontSize * 0.82f * 1.45f).sp, textAlign = TextAlign.Start,
+                hyphens = Hyphens.None, textIndent = TextIndent.None),
+            8 * dp, 14 * dp, 0f, 0f,
+        )
+        Block.Kind.IMAGE -> BlockSpec(base, 10 * dp, 14 * dp, 0f, 0f)
     }.whole()
 }
 
@@ -71,6 +81,9 @@ class Paginator(
     private val width: Int,
     private val height: Int,
     private val bionic: Boolean = false,
+    /** Pixel size of an illustration by its key, or null if it can't be read. */
+    private val imageSize: (String) -> androidx.compose.ui.unit.IntSize? = { null },
+    private val dropCap: Boolean = false,
 ) {
     private fun measure(text: androidx.compose.ui.text.AnnotatedString, spec: BlockSpec, start: Int): TextLayoutResult {
         val w = (width - spec.padStart - spec.padEnd).toInt().coerceAtLeast(1)
@@ -91,12 +104,21 @@ class Paginator(
             val spec = specs.getValue(b.kind)
             val text = if (b.kind == Block.Kind.SEPARATOR) "* * *" else b.text
             if (i in chapterStarts && i > from) push()
+            if (b.kind == Block.Kind.IMAGE) {
+                val box = imageSize(b.src)?.let { imageBox(it, width, height) } ?: continue
+                val top = spec.topOnPage(cur.isEmpty())
+                if (y + top + box.height > height && cur.isNotEmpty()) push()
+                cur += Slice(i, 0, 0)
+                y += spec.topOnPage(cur.size == 1) + box.height + spec.bottom
+                continue
+            }
+            val cap = dropCap && isDropCap(book, i)
             var start = 0
             var guard = 0
             while (start < text.length && guard++ < 10_000) {
                 val top = spec.topOnPage(cur.isEmpty())
                 val avail = height - y - top
-                val layout = measure(styledSlice(b, start, text.length, bionic = bionic), spec, start)
+                val layout = measure(styledSlice(b, start, text.length, bionic = bionic, dropCap = cap && start == 0), spec, start)
                 val lineH = if (layout.lineCount > 0) layout.getLineBottom(0) - layout.getLineTop(0) else 0f
                 // keep headings with at least two following lines
                 val need = if (b.kind == Block.Kind.HEADING) layout.size.height + lineH * 2 else layout.size.height.toFloat()
@@ -118,7 +140,7 @@ class Paginator(
                 // than the same lines inside the full paragraph. Measure the piece exactly as it will be drawn
                 // and give back lines until it really fits — otherwise the bottom line gets clipped.
                 var end = start + layout.getLineEnd(fit - 1)
-                while (fit > 1 && measure(styledSlice(b, start, end, bionic = bionic), spec, start).size.height > avail - 1f) {
+                while (fit > 1 && measure(styledSlice(b, start, end, bionic = bionic, dropCap = cap && start == 0), spec, start).size.height > avail - 1f) {
                     fit--
                     end = start + layout.getLineEnd(fit - 1)
                 }
@@ -153,3 +175,15 @@ fun sliceText(full: String, start: Int, end: Int): String {
     if (e < full.length && e > 0 && full[e - 1].isLetter() && full[e].isLetter()) t += "-"
     return t
 }
+
+/** An illustration scaled to the column: never wider than the column or taller than the page, at most 2× its pixels. */
+fun imageBox(px: androidx.compose.ui.unit.IntSize, maxW: Int, maxH: Int): androidx.compose.ui.unit.IntSize {
+    if (px.width <= 0 || px.height <= 0) return androidx.compose.ui.unit.IntSize(maxW, maxW / 2)
+    val k = minOf(maxW.toFloat() / px.width, maxH * 0.92f / px.height, 2f)
+    return androidx.compose.ui.unit.IntSize((px.width * k).toInt().coerceAtLeast(1), (px.height * k).toInt().coerceAtLeast(1))
+}
+
+/** The first paragraph right after a heading gets a large first letter. */
+fun isDropCap(book: ParsedBook, i: Int): Boolean =
+    book.blocks[i].kind == Block.Kind.PARAGRAPH && book.blocks.getOrNull(i - 1)?.kind == Block.Kind.HEADING &&
+        book.blocks[i].text.firstOrNull()?.isLetter() == true

@@ -2,6 +2,8 @@
 
 package io.github.galis228.materialereader.ui
 
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitEachGesture
 import android.app.Activity
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -120,6 +122,7 @@ import io.github.galis228.materialereader.data.PageAnim
 import io.github.galis228.materialereader.data.ReadMode
 import io.github.galis228.materialereader.data.ReaderSettings
 import io.github.galis228.materialereader.data.ReaderTheme
+import io.github.galis228.materialereader.data.TapAction
 import io.github.galis228.materialereader.data.SettingsRepo
 import io.github.galis228.materialereader.data.ReadingSpeed
 import io.github.galis228.materialereader.parse.Block
@@ -143,12 +146,13 @@ private sealed interface LoadState {
 }
 
 @Composable
-fun ReaderScreen(id: String, onBack: () -> Unit, onAppSettings: () -> Unit = {}) {
+fun ReaderScreen(id: String, onBack: () -> Unit, onAppSettings: () -> Unit = {}, startAt: Pair<Int, Int>? = null) {
     val ctx = LocalContext.current
     val library = remember { Library.get(ctx) }
     val repo = remember { SettingsRepo(ctx) }
     val settings by repo.settings.collectAsState(initial = null)
     val entry = remember(id) { library.entry(id) }
+    LaunchedEffect(id) { kotlinx.coroutines.delay(1500); io.github.galis228.materialereader.data.Reminders.updateShortcuts(ctx) }
     val settingsScope = rememberCoroutineScope()
     val s = settings ?: run { Box(Modifier.fillMaxSize()); return }
     // Night theme by the clock: re-checked every minute while reading
@@ -176,8 +180,8 @@ fun ReaderScreen(id: String, onBack: () -> Unit, onAppSettings: () -> Unit = {})
                 TextButton(onClick = onBack) { Text("Назад") }
             }
             is LoadState.Ready -> BookReader(
-                id = id, book = st.book, startBlock = entry?.position ?: 0, startOffset = entry?.offset ?: 0,
-                startChar = entry?.charPos ?: 0, settings = s, colors = colors, onSettings = onSettings, onBack = onBack, onAppSettings = onAppSettings,
+                id = id, book = st.book, startBlock = startAt?.first ?: entry?.position ?: 0, startOffset = if (startAt != null) 0 else entry?.offset ?: 0,
+                startChar = startAt?.second ?: entry?.charPos ?: 0, settings = s, colors = colors, onSettings = onSettings, onBack = onBack, onAppSettings = onAppSettings,
             )
         }
     }
@@ -304,20 +308,6 @@ private fun BookReader(
     LaunchedEffect(Unit) { VolumeKeys.events.collect { ctl.turn(it) } }
     BackHandler(enabled = sheet != null) { sheet = null }
 
-    val onTap: (Float) -> Unit = { x ->
-        when {
-            ctl.autoScroll -> ctl.autoScroll = false
-            settings.oneHand && uiVisible -> uiVisible = false
-            settings.oneHand && x < 0.22f -> ctl.turn(-1)
-            settings.oneHand && x < 0.45f -> uiVisible = true
-            settings.oneHand -> ctl.turn(1)
-            uiVisible -> uiVisible = false
-            settings.tapToTurn && x < (if (settings.simpleMode) 0.35f else 0.28f) -> ctl.turn(-1)
-            settings.tapToTurn && x > (if (settings.simpleMode) 0.65f else 0.72f) -> ctl.turn(1)
-            else -> uiVisible = true
-        }
-    }
-
     val hits = remember { BlockHits() }
     val highlights = books.firstOrNull { it.id == id }?.highlights.orEmpty()
     val hlMap = remember(highlights) { highlights.groupBy { it.block } }
@@ -338,15 +328,77 @@ private fun BookReader(
     // Turning the page closes an open footnote
     LaunchedEffect(Unit) { snapshotFlow { ctl.block to ctl.char }.drop(1).collect { footnote = null } }
     var returnTo by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    // Jump history: back and forward through places visited, like a browser
+    val backStack = remember { androidx.compose.runtime.mutableStateListOf<Pair<Int, Int>>() }
+    val fwdStack = remember { androidx.compose.runtime.mutableStateListOf<Pair<Int, Int>>() }
+    fun go(b: Int, c: Int) {
+        if (b == ctl.block && c == ctl.char) return
+        backStack.add(ctl.block to ctl.char); if (backStack.size > 50) backStack.removeAt(0)
+        fwdStack.clear(); ctl.jumpTo(b, c)
+    }
+    fun goBack() { backStack.removeLastOrNull()?.let { fwdStack.add(ctl.block to ctl.char); ctl.jumpTo(it.first, it.second) } }
+    fun goForward() { fwdStack.removeLastOrNull()?.let { backStack.add(ctl.block to ctl.char); ctl.jumpTo(it.first, it.second) } }
+    var imageView by remember { mutableStateOf<Int?>(null) }
+    var tableView by remember { mutableStateOf<String?>(null) }
+
+    fun toggleBookmark() {
+        scope.launch {
+            val existing = bookmarks.firstOrNull { it.block == ctl.block && abs(it.charPos - ctl.char) < 400 }
+            if (existing != null) library.removeBookmark(id, existing.createdAt)
+            else {
+                val t = book.blocks.getOrNull(ctl.block)?.text.orEmpty()
+                val snippet = t.substring(ctl.char.coerceIn(0, t.length)).take(140)
+                library.addBookmark(id, Bookmark(ctl.block, ctl.char, snippet,
+                    book.chapters.getOrNull(chapterIndex)?.title.orEmpty(), System.currentTimeMillis()))
+            }
+        }
+    }
+    fun act(a: TapAction) {
+        when (a) {
+            TapAction.NONE -> {}
+            TapAction.NEXT -> ctl.turn(1)
+            TapAction.PREV -> ctl.turn(-1)
+            TapAction.MENU -> uiVisible = !uiVisible
+            TapAction.BOOKMARK -> toggleBookmark()
+            TapAction.AI -> { aiPreset = null; sheet = Sheet.AI }
+            TapAction.SEARCH -> sheet = Sheet.SEARCH
+            TapAction.CONTENTS -> sheet = Sheet.TOC
+            TapAction.NIGHT -> onSettings(settings.copy(theme = if (colors.isDark) ReaderTheme.PAPER else ReaderTheme.NIGHT))
+            TapAction.BACK_IN_HISTORY -> goBack()
+        }
+    }
+    /** A tap at a point given as fractions of the screen: the zone grid decides what happens. */
+    val onTap: (Offset) -> Unit = { f ->
+        when {
+            ctl.autoScroll -> ctl.autoScroll = false
+            uiVisible -> uiVisible = false
+            settings.oneHand && f.x < 0.22f -> ctl.turn(-1)
+            settings.oneHand && f.x < 0.45f -> uiVisible = true
+            settings.oneHand -> ctl.turn(1)
+            else -> {
+                val col = (f.x * 3).toInt().coerceIn(0, 2); val row = (f.y * 3).toInt().coerceIn(0, 2)
+                val a = settings.tapZones.getOrElse(row * 3 + col) { TapAction.MENU }
+                act(if (!settings.tapToTurn && (a == TapAction.NEXT || a == TapAction.PREV)) TapAction.MENU else a)
+            }
+        }
+    }
+    val onDoubleTap: ((Offset) -> Unit)? = if (settings.doubleTap == TapAction.NONE) null else ({ _ -> act(settings.doubleTap) })
     val slop = with(LocalDensity.current) { 14.dp.toPx() }
     val tapAt: (Offset) -> Boolean = tap@{ p ->
         if (footnote != null) { footnote = null; return@tap true } // a tap on the page closes the note panel
         if (uiVisible || sheet != null) return@tap false
         val h = hits.hitAt(p) ?: return@tap false
         val blk = book.blocks.getOrNull(h.block) ?: return@tap false
-        val ref = blk.allRefs.firstOrNull { r ->
-            h.boxOf(r.start, r.end)?.let { b -> androidx.compose.ui.geometry.Rect(b.left - slop, b.top - slop, b.right + slop, b.bottom + slop).contains(p) } == true
-        } ?: return@tap false
+        if (blk.kind == Block.Kind.IMAGE) { imageView = h.block; return@tap true }
+        if (blk.kind == Block.Kind.TABLE) { tableView = blk.text; return@tap true }
+        fun near(a: Int, b: Int) = h.boxOf(a, b)?.let { r -> androidx.compose.ui.geometry.Rect(r.left - slop, r.top - slop, r.right + slop, r.bottom + slop).contains(p) } == true
+        blk.links.firstOrNull { near(it.start, it.end) }?.let { l ->
+            val target = book.anchors[l.target] ?: book.anchors[l.target.substringBefore('#')] ?: return@let
+            returnTo = ctl.block to ctl.char
+            go(target, 0)
+            return@tap true
+        }
+        val ref = blk.allRefs.firstOrNull { r -> near(r.start, r.end) } ?: return@tap false
         footnote = findFootnote(book, h.block, ref)
         footnoteContext = sentenceAround(blk.text, ref.start until ref.end.coerceAtLeast(ref.start + 1))
         true
@@ -365,15 +417,30 @@ private fun BookReader(
         }
     }
 
-    Box(Modifier.fillMaxSize().background(colors.bg)) {
+    var pinchSize by remember { mutableStateOf<Float?>(null) }
+    val twoFingerSwipes = settings.twoFingerUp != TapAction.NONE || settings.twoFingerDown != TapAction.NONE
+    Box(Modifier.fillMaxSize().background(colors.bg).twoFingers(
+        swipes = twoFingerSwipes,
+        onPinch = { r -> pinchSize = (settings.fontSize * r).coerceIn(12f, 40f) },
+        onPinchEnd = { r -> pinchSize = null; onSettings(settings.copy(fontSize = (settings.fontSize * r).roundToInt().toFloat().coerceIn(12f, 40f))) },
+        onSwipe = { up -> act(if (up) settings.twoFingerUp else settings.twoFingerDown) },
+    )) {
         CompositionLocalProvider(LocalBlockHits provides hits, LocalHighlights provides hlMap, LocalPageDark provides colors.isDark,
-            LocalPageAccent provides colors.accent, LocalTapAt provides tapAt, LocalBionic provides settings.bionic) {
+            LocalPageAccent provides colors.accent, LocalTapAt provides tapAt, LocalBionic provides settings.bionic,
+            LocalDropCap provides settings.dropCap, LocalBookForCaps provides book, LocalDoubleTap provides onDoubleTap,
+            LocalNoteColor provides footnoteColor(settings.noteColor, colors.isDark)) {
             when (settings.mode) {
                 ReadMode.SCROLL -> ScrollContent(book, settings, colors, ctl, startOffset, onTap, onLongPress) { scrollOffset = it }
                 ReadMode.PAGES -> PagedContent(book, settings, colors, ctl, onTap, onLongPress)
             }
         }
         if (settings.warmth > 0.01f) Box(Modifier.fillMaxSize().background(Color(0xFFFF8F00).copy(alpha = settings.warmth * 0.28f)))
+        pinchSize?.let { sz ->
+            androidx.compose.material3.Surface(shape = RoundedCornerShape(20.dp), color = colors.panel, contentColor = colors.text, shadowElevation = 6.dp,
+                modifier = Modifier.align(Alignment.Center)) {
+                Text("Аа  ${sz.roundToInt()}", Modifier.padding(horizontal = 22.dp, vertical = 12.dp), fontSize = sz.sp)
+            }
+        }
         if (bedtimeEnd != null) {
             val k = 1f - bedtimeLeft
             Box(Modifier.fillMaxSize().background(Color(0xFFFF8F00).copy(alpha = 0.10f + 0.18f * k)))
@@ -396,7 +463,7 @@ private fun BookReader(
         ) { Text("❚❚  Автопрокрутка", Modifier.padding(horizontal = 14.dp, vertical = 8.dp), fontSize = 13.sp) }
         returnTo?.let { (rb, rc) ->
             androidx.compose.material3.Surface(
-                onClick = { returnTo = null; ctl.jumpTo(rb, rc) },
+                onClick = { returnTo = null; go(rb, rc) },
                 shape = RoundedCornerShape(24.dp), color = colors.panel, contentColor = colors.text, shadowElevation = 6.dp,
                 modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 36.dp),
             ) {
@@ -414,12 +481,14 @@ private fun BookReader(
             var shown by remember { mutableStateOf<Footnote?>(null) }
             footnote?.let { shown = it } // keep the content while the panel slides away
             shown?.let { n ->
-                FootnotePanel(n, footnoteContext, book.title, colors,
-                    onGo = { b -> returnTo = ctl.block to ctl.char; footnote = null; ctl.jumpTo(b, 0) },
+                FootnotePanel(n, footnoteContext, book.title, colors, id, ctl.block,
+                    onGo = { b -> returnTo = ctl.block to ctl.char; footnote = null; go(b, 0) },
                     onDismiss = { footnote = null })
             }
         }
         BackHandler(enabled = footnote != null) { footnote = null }
+        imageView?.let { i -> book.blocks.getOrNull(i)?.let { b -> ImageViewer(book, b.src, b.text) { imageView = null } } }
+        tableView?.let { t -> TableViewer(t) { tableView = null } }
 
         if (!uiVisible && settings.mode == ReadMode.SCROLL) {
             val p = if (ctl.sliderMax <= 0f) 1f else (ctl.sliderValue / ctl.sliderMax).coerceIn(0f, 1f)
@@ -431,18 +500,7 @@ private fun BookReader(
             TopPanel(
                 book.title, book.chapters.getOrNull(chapterIndex)?.title.orEmpty(), colors, marked, onBack, simple = settings.simpleMode,
                 onSearch = { uiVisible = false; sheet = Sheet.SEARCH },
-                onBookmark = {
-                    scope.launch {
-                        val existing = bookmarks.firstOrNull { it.block == ctl.block && abs(it.charPos - ctl.char) < 400 }
-                        if (existing != null) library.removeBookmark(id, existing.createdAt)
-                        else {
-                            val t = book.blocks.getOrNull(ctl.block)?.text.orEmpty()
-                            val snippet = t.substring(ctl.char.coerceIn(0, t.length)).take(140)
-                            library.addBookmark(id, Bookmark(ctl.block, ctl.char, snippet,
-                                book.chapters.getOrNull(chapterIndex)?.title.orEmpty(), System.currentTimeMillis()))
-                        }
-                    }
-                },
+                onBookmark = { toggleBookmark() },
             )
         }
         AnimatedVisibility(uiVisible, Modifier.align(Alignment.BottomCenter), enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut()) {
@@ -454,6 +512,10 @@ private fun BookReader(
                 onAi = { aiPreset = null; sheet = Sheet.AI },
                 simple = settings.simpleMode,
                 bedtimeOn = bedtimeEnd != null,
+                canBack = backStack.isNotEmpty(), canForward = fwdStack.isNotEmpty(),
+                onHistBack = { goBack() }, onHistForward = { goForward() },
+                onBeforeSlider = { backStack.add(ctl.block to ctl.char); fwdStack.clear() },
+                hideTotal = settings.noSpoilers,
                 onBedtime = {
                     uiVisible = false
                     bedtimeEnd = if (bedtimeEnd != null) null else System.currentTimeMillis() + settings.bedtimeMinutes * 60_000L
@@ -469,14 +531,15 @@ private fun BookReader(
         Sheet.TEXT -> TextSettingsSheet(settings, onSettings) { sheet = null }
         Sheet.TOC -> TocSheet(
             book, chapterIndex, bookmarks,
-            onPick = { idx -> sheet = null; uiVisible = false; ctl.jumpTo(book.chapters[idx].startBlock, 0) },
-            onPickBookmark = { m -> sheet = null; uiVisible = false; ctl.jumpTo(m.block, m.charPos) },
+            onPick = { idx -> sheet = null; uiVisible = false; go(book.chapters[idx].startBlock, 0) },
+            onPickBookmark = { m -> sheet = null; uiVisible = false; go(m.block, m.charPos) },
             onDeleteBookmark = { m -> scope.launch { library.removeBookmark(id, m.createdAt) } },
             highlights = highlights,
-            onPickHighlight = { h -> sheet = null; uiVisible = false; ctl.jumpTo(h.block, 0) },
+            onPickHighlight = { h -> sheet = null; uiVisible = false; go(h.block, 0) },
+            noSpoilers = settings.noSpoilers,
         ) { sheet = null }
         Sheet.SEARCH -> SearchSheet(book, searchQuery, onQuery = { searchQuery = it }, onPick = { h ->
-            sheet = null; ctl.jumpTo(h.block, h.char)
+            sheet = null; go(h.block, h.char)
         }) { sheet = null }
         Sheet.SELECT -> SelectionSheet(
             blockText = book.blocks.getOrNull(paragraph)?.text.orEmpty(), blockIndex = paragraph,
@@ -484,11 +547,13 @@ private fun BookReader(
             onPut = { h -> scope.launch { library.putHighlight(id, h) } },
             onRemove = { c -> scope.launch { library.removeHighlight(id, c) } },
             onAskAi = { text -> aiPreset = text; sheet = Sheet.AI },
+            bookId = id,
         ) { if (sheet == Sheet.SELECT) sheet = null }
         Sheet.AI -> AiSheet(
             book, ctl.block, book.chapters.getOrNull(chapterIndex)?.startBlock ?: 0,
             pageText = { aiPreset ?: ctl.visibleText() }, preset = aiPreset,
             onOpenSettings = { sheet = null; onAppSettings() },
+            bookId = id, chapterTitle = book.chapters.getOrNull(chapterIndex)?.title.orEmpty(),
             onJournal = { q, ans ->
                 // a journal entry is a note on the current paragraph that colors no text (empty range)
                 scope.launch { library.putHighlight(id, io.github.galis228.materialereader.data.Highlight(ctl.block, 0, "📓 $q\n$ans", System.currentTimeMillis(), 0, 0)) }
@@ -529,10 +594,11 @@ fun SystemBars(visible: Boolean, dark: Boolean, keepScreenOn: Boolean) {
 @Composable
 private fun ScrollContent(
     book: ParsedBook, s: ReaderSettings, c: PageColors, ctl: ReaderController, startOffset: Int,
-    onTap: (Float) -> Unit, onLongPress: (Offset) -> Unit, onOffset: (Int) -> Unit,
+    onTap: (Offset) -> Unit, onLongPress: (Offset) -> Unit, onOffset: (Int) -> Unit,
 ) {
     val list: LazyListState = rememberLazyListState(ctl.block, startOffset)
     val tapAt = LocalTapAt.current
+    val dbl = LocalDoubleTap.current
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
     val total = (book.blocks.size - 1).coerceAtLeast(1)
@@ -581,7 +647,7 @@ private fun ScrollContent(
         val w = constraints.maxWidth.toFloat()
         LazyColumn(
             state = list,
-            modifier = Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onLongPress = { onLongPress(it) }) { if (!tapAt(it)) onTap(it.x / w) } },
+            modifier = Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onLongPress = { onLongPress(it) }, onDoubleTap = dbl) { if (!tapAt(it)) onTap(Offset(it.x / w, it.y / size.height)) } },
             contentPadding = PaddingValues(
                 start = s.margin.dp, end = s.margin.dp,
                 top = bars.calculateTopPadding() + 28.dp, bottom = bars.calculateBottomPadding() + 120.dp,
@@ -616,7 +682,25 @@ private fun SliceText(block: Block, index: Int, spec: BlockSpec, first: Boolean)
     var layout by remember { mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null) }
     if (hits != null) DisposableEffect(token) { onDispose { hits.remove(token) } }
     val bionic = LocalBionic.current
-    val text = remember(block, hls, accent, dark, bionic) { styledSlice(block, 0, block.text.length, accent, hls, dark, bionic) }
+    val cap = LocalDropCap.current && LocalBookForCaps.current?.let { isDropCap(it, index) } == true
+    if (block.kind == Block.Kind.IMAGE) {
+        val book = LocalBookForCaps.current ?: return
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val w = constraints.maxWidth
+            val px = BookImages.size(book, block.src) ?: return@BoxWithConstraints
+            val box = imageBox(px, w, (w * 1.6f).toInt())
+            val bmp = remember(block.src, box.width) { BookImages.bitmap(book, block.src, box.width) } ?: return@BoxWithConstraints
+            with(d) {
+                androidx.compose.foundation.Image(bmp, block.text, Modifier.align(Alignment.Center)
+                    .padding(top = spec.topOnPage(first).toDp(), bottom = spec.bottom.toDp())
+                    .size(box.width.toDp(), box.height.toDp())
+                    .then(if (hits != null) Modifier.onGloballyPositioned { hits.put(token, index, it.boundsInRoot(), null, 0) } else Modifier))
+            }
+        }
+        return
+    }
+    val noteColor = LocalNoteColor.current
+    val text = remember(block, hls, accent, dark, bionic, cap, noteColor) { styledSlice(block, 0, block.text.length, accent, hls, dark, bionic, cap, noteColor) }
     with(d) {
         Text(
             text, style = spec.forSlice(0), onTextLayout = { layout = it },
@@ -632,7 +716,7 @@ private fun SliceText(block: Block, index: Int, spec: BlockSpec, first: Boolean)
 
 // ---------------- Page mode ----------------
 
-private data class PageKey(val w: Int, val h: Int, val size: Float, val line: Float, val font: Any, val justify: Boolean, val hyph: Boolean, val bionic: Boolean)
+private data class PageKey(val w: Int, val h: Int, val size: Float, val line: Float, val font: Any, val justify: Boolean, val hyph: Boolean, val bionic: Boolean, val cap: Boolean)
 
 /** Last pagination, so reopening the same book with the same layout is instant. */
 private object PageCache {
@@ -641,13 +725,14 @@ private object PageCache {
 }
 
 @Composable
-private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl: ReaderController, onTap: (Float) -> Unit, onLongPress: (Offset) -> Unit) {
+private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl: ReaderController, onTap: (Offset) -> Unit, onLongPress: (Offset) -> Unit) {
     val density = LocalDensity.current
     val fontResolver = LocalFontFamilyResolver.current
     val layoutDir = LocalLayoutDirection.current
     val bars = WindowInsets.systemBarsIgnoringVisibility.asPaddingValues()
     val specs = rememberSpecs(s, c)
     val tapAt = LocalTapAt.current
+    val dbl = LocalDoubleTap.current
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val landscape = maxWidth > maxHeight
@@ -661,14 +746,14 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
         val colH = maxHeight - topPad - bottomPad
         val wPx = with(density) { colW.roundToPx() }
         val hPx = with(density) { colH.roundToPx() }
-        val key = PageKey(wPx, hPx, s.fontSize, s.lineHeight, s.font.family(), s.justify, s.hyphenate, s.bionic)
+        val key = PageKey(wPx, hPx, s.fontSize, s.lineHeight, s.font.family(), s.justify, s.hyphenate, s.bionic, s.dropCap)
 
         var progress by remember { mutableFloatStateOf(0f) }
         val pages by produceState<List<Page>?>(PageCache.pages.takeIf { PageCache.key == book to key }, book, key) {
             if (PageCache.key == book to key) { value = PageCache.pages; return@produceState }
             value = null
             val measurer = TextMeasurer(fontResolver, density, layoutDir, cacheSize = 0)
-            val paginator = Paginator(measurer, specs, wPx, hPx, s.bionic)
+            val paginator = Paginator(measurer, specs, wPx, hPx, s.bionic, { BookImages.size(book, it) }, s.dropCap)
             // The current chapter first, so the text shows up (and settings changes preview) right away
             val ch = book.chapters.indexOfLast { it.startBlock <= ctl.block }.coerceAtLeast(0)
             val from = book.chapters.getOrNull(ch)?.startBlock ?: 0
@@ -711,7 +796,7 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
         }
         val chapterPages = remember(list, per) { book.chapters.drop(1).map { list.indexOfPosition(it.startBlock, 0) / per } }
         ctl.sliderMax = (spreads - 1).coerceAtLeast(1).toFloat()
-        ctl.ticks = chapterPages.map { it.toFloat() / ctl.sliderMax }
+        ctl.ticks = if (s.noSpoilers) emptyList() else chapterPages.map { it.toFloat() / ctl.sliderMax }
         ctl.pageLabel = "стр. ${spread * per + 1} из ${list.size}"
         val nextChapterSpread = chapterPages.firstOrNull { it > spread } ?: spreads
         ctl.pagesToChapter = ((nextChapterSpread - spread) * per).coerceAtLeast(1)
@@ -744,7 +829,7 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
                     Text(ch, color = c.muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                    Text("${sp * per + 1} / ${list.size}", color = c.muted, fontSize = 11.sp, modifier = Modifier.padding(start = 12.dp))
+                    Text(if (s.noSpoilers) "${sp * per + 1}" else "${sp * per + 1} / ${list.size}", color = c.muted, fontSize = 11.sp, modifier = Modifier.padding(start = 12.dp))
                 }
             }
         }
@@ -769,7 +854,7 @@ private fun PagedContent(book: ParsedBook, s: ReaderSettings, c: PageColors, ctl
             }
             HorizontalPager(
                 state = pager,
-                modifier = Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onLongPress = { onLongPress(it) }) { if (!tapAt(it)) onTap(it.x / w) } },
+                modifier = Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onLongPress = { onLongPress(it) }, onDoubleTap = dbl) { if (!tapAt(it)) onTap(Offset(it.x / w, it.y / size.height)) } },
                 beyondViewportPageCount = 1,
             ) { sp ->
                 Box(Modifier.fillMaxSize().pageTransition(pager, sp, s.anim)) { spreadView(sp) }
@@ -794,17 +879,28 @@ private fun PageView(page: Page, book: ParsedBook, specs: Map<Block.Kind, BlockS
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val width = constraints.maxWidth
         val bionic = LocalBionic.current
-        val placed = remember(page, specs, width, measurer, highlights, accent, dark, bionic) {
+        val dropCap = LocalDropCap.current
+        val noteColor = LocalNoteColor.current
+        val height = constraints.maxHeight
+        val placed = remember(page, specs, width, measurer, highlights, accent, dark, bionic, dropCap, noteColor) {
             var y = 0f
             page.slices.mapIndexed { k, sl ->
                 val b = book.blocks[sl.block]
                 val spec = specs.getValue(b.kind)
                 val w = (width - spec.padStart - spec.padEnd).toInt().coerceAtLeast(1)
-                val layout = measurer.measure(styledSlice(b, sl.start, sl.end, accent, highlights[sl.block].orEmpty(), dark, bionic),
-                    spec.forSlice(sl.start), constraints = Constraints.fixedWidth(w), skipCache = true)
                 val top = y + spec.topOnPage(k == 0)
-                y = top + layout.size.height + spec.bottom
-                PlacedSlice(sl.block, layout, Offset(spec.padStart, top), w, sl.start)
+                if (b.kind == Block.Kind.IMAGE) {
+                    // same box arithmetic as the paginator
+                    val box = BookImages.size(book, b.src)?.let { imageBox(it, width, height) } ?: androidx.compose.ui.unit.IntSize(1, 1)
+                    y = top + box.height + spec.bottom
+                    PlacedSlice(sl.block, null, Offset((width - box.width) / 2f, top), box.width, 0, BookImages.bitmap(book, b.src, box.width), box)
+                } else {
+                    val layout = measurer.measure(styledSlice(b, sl.start, sl.end, accent, highlights[sl.block].orEmpty(), dark, bionic,
+                        dropCap && sl.start == 0 && isDropCap(book, sl.block), noteColor),
+                        spec.forSlice(sl.start), constraints = Constraints.fixedWidth(w), skipCache = true)
+                    y = top + layout.size.height + spec.bottom
+                    PlacedSlice(sl.block, layout, Offset(spec.padStart, top), w, sl.start)
+                }
             }
         }
         var origin by remember { mutableStateOf(Offset.Zero) }
@@ -814,21 +910,29 @@ private fun PageView(page: Page, book: ParsedBook, specs: Map<Block.Kind, BlockS
             LaunchedEffect(origin, placed) {
                 placed.forEachIndexed { i, p ->
                     hits.put(tokens[i], p.block, androidx.compose.ui.geometry.Rect(origin + p.at,
-                        androidx.compose.ui.geometry.Size(p.width.toFloat(), p.layout.size.height.toFloat())), p.layout, p.startChar)
+                        androidx.compose.ui.geometry.Size(p.width.toFloat(), (p.layout?.size?.height ?: p.box.height).toFloat())), p.layout, p.startChar)
                 }
             }
         }
         Canvas(
             Modifier.fillMaxSize()
                 .onGloballyPositioned { origin = it.positionInRoot() }
-                .semantics { contentDescription = placed.joinToString("\n") { it.layout.layoutInput.text.text } },
+                .semantics { contentDescription = placed.joinToString("\n") { it.layout?.layoutInput?.text?.text ?: "иллюстрация" } },
         ) {
-            for (p in placed) drawText(p.layout, topLeft = p.at)
+            for (p in placed) {
+                p.layout?.let { drawText(it, topLeft = p.at) }
+                p.image?.let { img ->
+                    drawImage(img, dstOffset = androidx.compose.ui.unit.IntOffset(p.at.x.toInt(), p.at.y.toInt()), dstSize = p.box)
+                }
+            }
         }
     }
 }
 
-private class PlacedSlice(val block: Int, val layout: androidx.compose.ui.text.TextLayoutResult, val at: Offset, val width: Int, val startChar: Int)
+private class PlacedSlice(
+    val block: Int, val layout: androidx.compose.ui.text.TextLayoutResult?, val at: Offset, val width: Int, val startChar: Int,
+    val image: androidx.compose.ui.graphics.ImageBitmap? = null, val box: androidx.compose.ui.unit.IntSize = androidx.compose.ui.unit.IntSize.Zero,
+)
 
 /** Page-turn effects. Pages with a higher index are drawn on top, so effects animate the incoming page. */
 private fun Modifier.pageTransition(pager: PagerState, page: Int, anim: PageAnim): Modifier = this
@@ -897,6 +1001,8 @@ private fun BottomPanel(
     onText: () -> Unit, onToc: () -> Unit, onToggleNight: () -> Unit, onAi: () -> Unit,
     simple: Boolean = false, onFont: (Float) -> Unit = {},
     bedtimeOn: Boolean = false, onBedtime: () -> Unit = {}, onAutoScroll: (() -> Unit)? = null,
+    canBack: Boolean = false, canForward: Boolean = false, onHistBack: () -> Unit = {}, onHistForward: () -> Unit = {},
+    onBeforeSlider: () -> Unit = {}, hideTotal: Boolean = false,
 ) {
     var dragging by remember { mutableStateOf(false) }
     var dragValue by remember { mutableFloatStateOf(0f) }
@@ -904,8 +1010,13 @@ private fun BottomPanel(
     val label = if (dragging) "${(value / ctl.sliderMax * 100).roundToInt()}%" else ctl.pageLabel
 
     Column(Modifier.fillMaxWidth().background(c.panel).navigationBarsPadding().padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 8.dp)) {
+        if (canBack || canForward) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onHistBack, enabled = canBack) { Text("← Назад", color = if (canBack) c.accent else c.muted, fontSize = 13.sp) }
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = onHistForward, enabled = canForward) { Text("Вперёд →", color = if (canForward) c.accent else c.muted, fontSize = 13.sp) }
+        }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(label, color = c.muted, fontSize = 12.sp, maxLines = 1, modifier = Modifier.weight(1f))
+            Text(if (hideTotal && !dragging) label.substringBefore(" из ") else label, color = c.muted, fontSize = 12.sp, maxLines = 1, modifier = Modifier.weight(1f))
             val pages = ctl.pagesToChapter
             Text(
                 buildString {
@@ -927,7 +1038,7 @@ private fun BottomPanel(
             Slider(
                 value = value.coerceIn(0f, ctl.sliderMax), valueRange = 0f..ctl.sliderMax,
                 onValueChange = { dragging = true; dragValue = it },
-                onValueChangeFinished = { ctl.jumpToSlider(dragValue); dragging = false },
+                onValueChangeFinished = { onBeforeSlider(); ctl.jumpToSlider(dragValue); dragging = false },
                 colors = SliderDefaults.colors(thumbColor = c.accent, activeTrackColor = c.accent, inactiveTrackColor = c.text.copy(alpha = 0.15f)),
             )
         }
@@ -988,3 +1099,35 @@ private fun TranslationLine(text: String, spec: BlockSpec, c: PageColors) {
         )
     }
 }
+
+/**
+ * Two-finger gestures over the page: pinch changes the font size (applied when the fingers lift),
+ * a vertical two-finger swipe runs a chosen action. Two fingers never scroll or turn the page.
+ */
+private fun Modifier.twoFingers(swipes: Boolean, onPinch: (Float) -> Unit, onPinchEnd: (Float) -> Unit, onSwipe: (up: Boolean) -> Unit) =
+    pointerInput(swipes) {
+        awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false, pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+            var startDist = 0f; var startY = 0f; var mode = 0; var ratio = 1f; var dy = 0f
+            while (true) {
+                val ev = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                val down = ev.changes.filter { it.pressed }
+                if (down.isEmpty()) break
+                if (down.size >= 2) {
+                    val a = down[0].position; val b = down[1].position
+                    val d = (a - b).getDistance(); val cy = (a.y + b.y) / 2
+                    if (startDist == 0f) { startDist = d.coerceAtLeast(1f); startY = cy }
+                    ratio = d / startDist; dy = cy - startY
+                    if (mode == 0) mode = when {
+                        abs(ratio - 1f) > 0.12f -> 1
+                        swipes && abs(dy) > 60.dp.toPx() -> 2
+                        else -> 0
+                    }
+                    if (mode == 1) onPinch(ratio)
+                    ev.changes.forEach { it.consume() }
+                }
+            }
+            if (mode == 1) onPinchEnd(ratio)
+            if (mode == 2) onSwipe(dy < 0)
+        }
+    }

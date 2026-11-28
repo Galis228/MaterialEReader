@@ -15,7 +15,7 @@ import java.util.zip.ZipOutputStream
  * the way to move the library to a new phone.
  */
 object Backup {
-    private val files = listOf("library.json", "words.json", "stats.json")
+    private val files = listOf("library.json", "words.json", "stats.json", "shelves.json", "ai_history.json", "wishlist.json")
     private val dirs = listOf("books", "covers")
 
     suspend fun export(ctx: Context, to: Uri): Int = withContext(Dispatchers.IO) {
@@ -68,6 +68,8 @@ object Backup {
         Library.get(ctx).reload()
         Words.get(ctx).reload()
         Stats.get(ctx).reload()
+        Wishlist.get(ctx).reload()
+        io.github.galis228.materialereader.ai.AiHistory.get(ctx).reload()
         ContinueWidget.refresh(ctx)
         return n
     }
